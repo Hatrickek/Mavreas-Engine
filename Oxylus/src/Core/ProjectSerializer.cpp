@@ -1,64 +1,50 @@
-#include "ProjectSerializer.h"
+#include "ProjectSerializer.hpp"
 
-#include "Core/YamlHelpers.h"
-#include <Utils/FileUtils.h>
-#include "Utils/Log.h"
+#include "Utils/Log.hpp"
+#include "Utils/Toml.hpp"
+#include "FileSystem.hpp"
 
-#include <fstream>
+namespace ox {
+ProjectSerializer::ProjectSerializer(Shared<Project> project) : project(std::move(project)) {}
 
+bool ProjectSerializer::serialize(const std::string& file_path) const {
+  const auto& config = project->get_config();
 
-namespace Oxylus {
-ProjectSerializer::ProjectSerializer(Ref<Project> project) : m_project(std::move(project)) { }
+  const auto root = toml::table{{
+    "project",
+    toml::table{
+      {"name", config.name},
+      {"asset_directory", config.asset_directory},
+      {"start_scene", config.start_scene},
+      {"module_name", config.module_name},
+    },
+  }};
 
-bool ProjectSerializer::serialize(const std::filesystem::path& file_path) const {
-  const auto& config = m_project->get_config();
-
-  ryml::Tree tree;
-
-  ryml::NodeRef nodeRoot = tree.rootref();
-  nodeRoot |= ryml::MAP;
-
-  auto node = nodeRoot["Project"];
-  node |= ryml::MAP;
-
-  node["Name"] << config.name;
-  node["StartScene"] << config.start_scene;
-  node["AssetDirectory"] << config.asset_directory;
-
-  std::stringstream ss;
-  ss << tree;
-  std::ofstream filestream(file_path);
-  filestream << ss.str();
-
-  m_project->set_project_file_path(file_path.string());
+  fs::write_file(file_path, root, "# Oxylus project file"); // TODO: check for result
 
   return true;
 }
 
-bool ProjectSerializer::deserialize(const std::filesystem::path& file_path) const {
-  auto& [Name, StartScene, AssetDirectory] = m_project->get_config();
-
-  const auto& content = FileUtils::read_file(file_path.string());
+bool ProjectSerializer::deserialize(const std::string& file_path) const {
+  auto& [name, start_scene, asset_directory, module_name] = project->get_config();
+  const auto content = fs::read_file(file_path);
   if (content.empty()) {
-    OX_CORE_ASSERT(!content.empty(), fmt::format("Couldn't load project file: {0}", file_path.string()).c_str());
+    OX_ASSERT(!content.empty(), "Couldn't load project file: {0}", file_path);
     return false;
   }
 
-  ryml::Tree tree = ryml::parse_in_arena(c4::to_csubstr(content));
+  try {
+    toml::table toml = toml::parse(content);
 
-  const ryml::ConstNodeRef root = tree.rootref();
-
-  if (!root.has_child("Project"))
-    return false;
-
-  const ryml::ConstNodeRef nodeRoot = root["Project"];
-
-  nodeRoot["Name"] >> Name;
-  nodeRoot["StartScene"] >> StartScene;
-  nodeRoot["AssetDirectory"] >> AssetDirectory;
-
-  m_project->set_project_file_path(file_path.string());
+    const auto project_node = toml["project"];
+    name = project_node["name"].as_string()->get();
+    asset_directory = project_node["asset_directory"].as_string()->get();
+    start_scene = project_node["start_scene"].as_string()->get();
+    module_name = project_node["module_name"].as_string()->get();
+  } catch (const std::exception& exc) {
+    OX_LOG_ERROR("{}", exc.what());
+  }
 
   return true;
 }
-}
+} // namespace ox

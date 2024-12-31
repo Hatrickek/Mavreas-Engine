@@ -1,168 +1,97 @@
-#include "Camera.h"
+#include "Camera.hpp"
 
-#include "Core/Input.h"
-#include "Utils/OxMath.h"
-#include "Utils/Profiler.h"
+#include "Utils/Profiler.hpp"
 
-#include "Vulkan/Renderer.h"
+#include "Renderer.hpp"
 
-namespace Oxylus {
-Camera::Camera(glm::vec3 position) {
-  m_position = position;
-  update_view_matrix();
-}
-
-glm::mat4 Camera::get_projection_matrix() const {
-  OX_SCOPED_ZONE;
-  auto projection = glm::perspective(glm::radians(m_fov), m_aspect, m_near_clip, m_far_clip);
-  projection[1][1] *= -1.0f;
-  return projection;
-}
-
-Mat4 Camera::get_projection_matrix_flipped() const {
-  return glm::perspective(glm::radians(m_fov), m_aspect, m_near_clip, m_far_clip);
-}
-
-void Camera::set_near(float new_near) {
-  set_perspective(m_fov, m_aspect, new_near, m_far_clip);
-}
-
-void Camera::set_far(float new_far) {
-  set_perspective(m_fov, m_aspect, m_near_clip, new_far);
-}
-
-void Camera::dolly(float z) {
-  translate({0, 0, z});
-}
-
-glm::mat4 Camera::get_view_matrix() const {
-  return m_view_matrix;
-}
-
-Mat4 Camera::get_world_matrix() const {
-  return glm::translate(glm::mat4(1.0f), m_position) *
-         glm::toMat4(glm::quat(Vec3(get_pitch(), get_yaw(), m_tilt)));
-}
-
-void Camera::set_position(const glm::vec3 pos) {
-  m_position = pos;
-}
-
-void Camera::set_perspective(float fov, float aspect, float znear, float zfar) {
-  this->m_fov = fov;
-  this->m_near_clip = znear;
-  this->m_far_clip = zfar;
-  m_perspective = glm::perspective(glm::radians(fov), aspect, znear, zfar);
-}
-
-void Camera::set_fov(const float fov) {
-  this->m_fov = fov;
-  m_perspective = glm::perspective(glm::radians(fov),
-                                   static_cast<float>(Renderer::get_viewport_width()) / static_cast<float>(Renderer::get_viewport_height()),
-                                   m_near_clip,
-                                   m_far_clip);
-}
-
-void Camera::update_aspect_ratio(const float aspect) {
-  m_perspective = glm::perspective(glm::radians(m_fov), aspect, m_near_clip, m_far_clip);
-}
-
-void Camera::update_aspect_ratio(const VkExtent2D& size) {
-  update_aspect_ratio(static_cast<float>(size.width) / static_cast<float>(size.height));
-}
-
-glm::vec3 Camera::get_front() const {
-  return m_forward;
-}
-
-glm::vec3 Camera::get_right() const {
-  return m_right;
-}
-
-const glm::vec3& Camera::get_position() const {
-  return m_position;
-}
-
-void Camera::translate(const glm::vec3& delta) {
-  const glm::vec3 cam_front = get_front();
-  glm::vec3 cam_up = glm::vec3(0.0f, 1.0f, 0.0f);
-  const glm::vec3 cam_left = glm::cross(cam_front, cam_up);
-  cam_up = glm::cross(cam_front, cam_left);
-  const glm::vec3 result = cam_left * delta.x + cam_up * -delta.y + cam_front * delta.z;
-  m_position += result;
+namespace ox {
+Camera::Camera(Vec3 position) {
+  _position = position;
+  _yaw = glm::radians(-90.f);
+  update();
 }
 
 void Camera::update() {
+  jitter_prev = jitter;
+  previous_matrices.projection_matrix = matrices.projection_matrix;
+  previous_matrices.view_matrix = matrices.view_matrix;
+  update_projection_matrix();
   update_view_matrix();
 }
 
-void Camera::update(const glm::vec3& pos, const glm::vec3& rotation) {
+void Camera::update(const Vec3& pos, const Vec3& rotation) {
   OX_SCOPED_ZONE;
   set_position(pos);
   set_pitch(rotation.x);
   set_yaw(rotation.y);
-  m_tilt = rotation.z;
-  update_view_matrix();
+  set_tilt(rotation.z);
+  update();
 }
 
 void Camera::update_view_matrix() {
   OX_SCOPED_ZONE;
-  const float cos_yaw = glm::cos(m_yaw);
-  const float sin_yaw = glm::sin(m_yaw);
-  const float cos_pitch = glm::cos(m_pitch);
-  const float sin_pitch = glm::sin(m_pitch);
+  const float cos_yaw = glm::cos(_yaw);
+  const float sin_yaw = glm::sin(_yaw);
+  const float cos_pitch = glm::cos(_pitch);
+  const float sin_pitch = glm::sin(_pitch);
 
-  m_forward.x = cos_yaw * cos_pitch;
-  m_forward.y = sin_pitch;
-  m_forward.z = sin_yaw * cos_pitch;
+  _forward.x = cos_yaw * cos_pitch;
+  _forward.y = sin_pitch;
+  _forward.z = sin_yaw * cos_pitch;
 
-  m_forward = glm::normalize(m_forward);
-  m_right = glm::normalize(glm::cross(m_forward, {m_tilt, 1, m_tilt}));
-  m_up = glm::normalize(glm::cross(m_right, m_forward));
+  _forward = glm::normalize(_forward);
+  _right = glm::normalize(glm::cross(_forward, {_tilt, 1, _tilt}));
+  _up = glm::normalize(glm::cross(_right, _forward));
 
-  m_view_matrix = glm::lookAt(m_position, m_position + m_forward, m_up);
+  matrices.view_matrix = glm::lookAt(_position, _position + _forward, _up);
 
-  m_aspect = (float)Renderer::get_viewport_width() / (float)Renderer::get_viewport_height();
+  _aspect = (float)Renderer::get_viewport_width() / (float)Renderer::get_viewport_height();
 }
 
-Mat4 Camera::generate_view_matrix(const Vec3& position, const Vec3& view_dir, const Vec3& up) {
-  return glm::lookAt(position, position + view_dir, up);
+void Camera::update_projection_matrix() {
+  if (_projection == Projection::Perspective) {
+    matrices.projection_matrix = glm::perspective(glm::radians(_fov), _aspect, far_clip, near_clip); // reversed-z
+  } else {
+    matrices.projection_matrix = glm::ortho(-_aspect * _zoom, _aspect * _zoom, -_zoom, _zoom, 100.0f,
+                                            -100.0f);                                                // reversed-z
+  }
+  matrices.projection_matrix[1][1] *= -1.0f;
 }
 
 Frustum Camera::get_frustum() {
-  const float half_v_side = get_far() * tanf(glm::radians(m_fov) * .5f);
+  const float half_v_side = get_far() * tanf(glm::radians(_fov) * .5f);
   const float half_h_side = half_v_side * get_aspect();
-  const Vec3 forward_far = get_far() * m_forward;
+  const Vec3 forward_far = get_far() * _forward;
 
-#if 1
   Frustum frustum = {
-    .top_face = {m_position, cross(m_right, forward_far - m_up * half_v_side)},
-    .bottom_face = {m_position, cross(forward_far + m_up * half_v_side, m_right)},
-    .right_face = {m_position, cross(forward_far - m_right * half_h_side, m_up)},
-    .left_face = {m_position, cross(m_up, forward_far + m_right * half_h_side)},
-    .far_face = {m_position + forward_far, -m_forward},
-    .near_face = {m_position + get_near() * m_forward, m_forward},
+    .top_face = {_position, cross(_right, forward_far - _up * half_v_side)},
+    .bottom_face = {_position, cross(forward_far + _up * half_v_side, _right)},
+    .right_face = {_position, cross(forward_far - _right * half_h_side, _up)},
+    .left_face = {_position, cross(_up, forward_far + _right * half_h_side)},
+    .far_face = {_position + forward_far, -_forward},
+    .near_face = {_position + get_near() * _forward, _forward},
   };
-#endif
 
-#if 0
-  Frustum frustum = {
-    .top_face = {m_forward * m_near_clip + m_position, m_forward},
-    .bottom_face = {m_position + forward_far, m_forward * -1.0f},
-    .right_face = {m_position, cross(m_up, forward_far + m_right * half_h_side)},
-    .left_face = {m_position, cross(forward_far - m_right * half_h_side, m_up)},
-    .far_face = {m_position, cross(m_right, forward_far - m_up * half_v_side)},
-    .near_face = {m_position, cross(forward_far + m_up * half_v_side, m_right)}
-  };
-#endif
-
-  frustum.planes[0] = &frustum.top_face;
-  frustum.planes[1] = &frustum.bottom_face;
-  frustum.planes[2] = &frustum.right_face;
-  frustum.planes[3] = &frustum.left_face;
-  frustum.planes[4] = &frustum.far_face;
-  frustum.planes[5] = &frustum.near_face;
+  frustum.init();
 
   return frustum;
 }
+
+RayCast Camera::get_screen_ray(const Vec2& screen_pos) const {
+  const Mat4 view_proj_inverse = inverse(get_projection_matrix() * get_view_matrix());
+
+  float screen_x = screen_pos.x / (float)Renderer::get_viewport_width();
+  float screen_y = screen_pos.y / (float)Renderer::get_viewport_height();
+
+  screen_x = 2.0f * screen_x - 1.0f;
+  screen_y = 2.0f * screen_y - 1.0f;
+
+  Vec4 n = view_proj_inverse * Vec4(screen_x, screen_y, 0.0f, 1.0f);
+  n /= n.w;
+
+  Vec4 f = view_proj_inverse * Vec4(screen_x, screen_y, 1.0f, 1.0f);
+  f /= f.w;
+
+  return {Vec3(n), normalize(Vec3(f) - Vec3(n))};
 }
+} // namespace ox

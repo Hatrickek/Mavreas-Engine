@@ -1,5 +1,5 @@
-#include "Layer.h"
+#include "Layer.hpp"
 
-namespace Oxylus {
+namespace ox {
 Layer::Layer(const std::string& name) : debug_name(name) { }
 }

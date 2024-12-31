@@ -1,22 +1,36 @@
-﻿#include "LuaInputBindings.h"
+﻿#include "LuaInputBindings.hpp"
 
 #include <sol/state.hpp>
 #include <sol/string_view.hpp>
 
-#include "Core/Input.h"
-#include "Core/Keycodes.h"
+#include "LuaHelpers.hpp"
 
-namespace Oxylus::LuaBindings {
-void bind_lua_input(const Ref<sol::state>& state) {
-  auto input = (*state)["Input"].get_or_create<sol::table>();
+#include "Core/Input.hpp"
+#include "Core/Keycodes.hpp"
 
-  input.set_function("get_key_pressed", [](const KeyCode key) -> bool { return Input::get_key_pressed(key); });
-  input.set_function("get_key_held", [](const KeyCode key) -> bool { return Input::get_key_held(key); });
+#include "Utils/Profiler.hpp"
 
-  input.set_function("get_mouse_clicked", [](const MouseCode key) -> bool { return Input::get_mouse_clicked(key); });
-  input.set_function("get_mouse_held", [](const MouseCode key) -> bool { return Input::get_mouse_held(key); });
-  input.set_function("get_mouse_position", []() -> Vec2 { return Input::get_mouse_position(); });
-  input.set_function("get_scroll_offset", []() -> float { return Input::get_mouse_scroll_offset_y(); });
+namespace ox::LuaBindings {
+void bind_input(const Shared<sol::state>& state) {
+  OX_SCOPED_ZONE;
+  auto input = state->create_table("Input");
+
+  SET_TYPE_FUNCTION(input, Input, get_key_pressed);
+  SET_TYPE_FUNCTION(input, Input, get_key_held);
+  SET_TYPE_FUNCTION(input, Input, get_mouse_clicked);
+  SET_TYPE_FUNCTION(input, Input, get_mouse_held);
+  SET_TYPE_FUNCTION(input, Input, get_mouse_scroll_offset_y);
+  SET_TYPE_FUNCTION(input, Input, get_mouse_position);
+  SET_TYPE_FUNCTION(input, Input, set_mouse_position);
+
+  const std::initializer_list<std::pair<sol::string_view, Input::CursorState>> cursor_states = {
+    {"Disabled", Input::CursorState::Disabled},
+    {"Normal", Input::CursorState::Normal},
+    {"Hidden", Input::CursorState::Hidden}
+  };
+  state->new_enum<Input::CursorState, true>("CursorState", cursor_states);
+  input.set_function("set_cursor_state", [](const Input::CursorState cursor_state) { return Input::set_cursor_state(cursor_state); });
+  SET_TYPE_FUNCTION(input, Input, get_cursor_state);
 
   // TODO: controller support
   //input.set_function("get_controller_axis", [](int id, int axis) -> float { return Input::get_controller_axis(id, axis); });

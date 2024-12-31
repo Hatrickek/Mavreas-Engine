@@ -1,5 +1,5 @@
-﻿#include "Frustum.h"
+﻿#include "Frustum.hpp"
 
-namespace Oxylus {
+namespace ox {
 
 }

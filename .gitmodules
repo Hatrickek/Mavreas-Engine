@@ -1,12 +1,6 @@
 [submodule "Oxylus/vendor/miniaudio"]
 	path = Oxylus/vendor/miniaudio
 	url = https://github.com/mackron/miniaudio.git
-[submodule "Oxylus/vendor/glm"]
-	path = Oxylus/vendor/glm
-	url = https://github.com/g-truc/glm.git
 [submodule "Oxylus/vendor/ImGuizmo"]
 	path = Oxylus/vendor/ImGuizmo
 	url = https://github.com/CedricGuillemet/ImGuizmo.git
-[submodule "Oxylus/vendor/CMake-Utils"]
-	path = Oxylus/vendor/CMake-Utils
-	url = https://github.com/Hatrickek/CMake-Utils.git

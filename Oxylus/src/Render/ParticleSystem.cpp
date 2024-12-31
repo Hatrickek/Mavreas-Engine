@@ -1,10 +1,10 @@
-#include "ParticleSystem.h"
+#include "ParticleSystem.hpp"
 
 #include <glm/gtx/norm.hpp>
 
-#include "Utils/Profiler.h"
+#include "Utils/Profiler.hpp"
 
-namespace Oxylus {
+namespace ox {
 ParticleSystem::ParticleSystem() : particles(10000) {
   if (properties.play_on_awake)
     play();

@@ -9,8 +9,6 @@ Currently I'm developing [Oxrena](https://github.com/Hatrickek/Oxrena) -a quake-
 
 Windows, Linux and Mac (with MoltenVK) is supported.
 
-If you liked my work and would like to donate, you can do so with my [ko-fi page](https://ko-fi.com/hatrickek). Thanks!
-
 ## Features:     
 - Modular Vulkan renderer built with Vuk.
 - Modern rendering features:
@@ -53,7 +51,7 @@ Currently supported and tested compilers are only: MSVC and Clang
 - Run the root CMake script with this command to generate for MSVC:       
 `cmake -S . -B ./build/ -G "Visual Studio 17 2022" -A x64`      
 For clang:  
-`cmake -B ./build -G Ninja -DCMAKE_CXX_COMPILER=clang++`
+`cmake -B ./build -G Ninja -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_BUILD_TYPE=Release`
 - Install `directx-shader-compiler` package if required. (Only required for UNIX)
 - Then run this command to build it with CMake:   
 `cmake --build ./build --config Release`
@@ -68,7 +66,7 @@ For clang:
 - [Jolt](https://github.com/jrouwe/JoltPhysics)
 - [MiniAudio](https://github.com/mackron/miniaudio)
 - [Tracy](https://github.com/wolfpld/tracy)
-- [ryml](https://github.com/biojppm/rapidyaml)
+- [tomlplusplus](https://github.com/marzer/tomlplusplus)
 - [lua](https://github.com/walterschell/Lua)
 - [sol2](https://github.com/ThePhD/sol2)
 - [RapidJson](https://github.com/Tencent/rapidjson/tree/master)

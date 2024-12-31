@@ -1,3 +1,3 @@
-﻿#include "Event.h"
+﻿#include "Event.hpp"
 
-namespace Oxylus {}
+namespace ox {}

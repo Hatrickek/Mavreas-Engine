@@ -1,26 +1,22 @@
-#include "Physics.h"
+#include "Physics.hpp"
 
 #include <cstdarg>
 
-#include "Core/Base.h"
-#include "Utils/Log.h"
-#include "Utils/Profiler.h"
+#include "Jolt/Physics/Body/BodyManager.h"
+#include "RayCast.hpp"
 
-namespace Oxylus {
-BPLayerInterfaceImpl Physics::s_layer_interface;
-JPH::TempAllocatorImpl* Physics::s_TempAllocator = nullptr;
-ObjectVsBroadPhaseLayerFilterImpl Physics::s_object_vs_broad_phase_layer_filter_interface;
-ObjectLayerPairFilterImpl Physics::s_object_layer_pair_filter_interface;
-JPH::PhysicsSystem* Physics::s_PhysicsSystem = nullptr;
-JPH::JobSystemThreadPool* Physics::s_JobSystem = nullptr;
+#include "Core/App.hpp"
+#include "Utils/OxMath.hpp"
 
-std::map<Physics::EntityLayer, Physics::EntityLayerData> Physics::layer_collision_mask =
-{
-  {BIT(0), {"Static", static_cast<uint16_t>(0xFFFF), 0}},
-  {BIT(1), {"Default", static_cast<uint16_t>(0xFFFF), 1}},
-  {BIT(2), {"Player", static_cast<uint16_t>(0xFFFF), 2}},
-  {BIT(3), {"Sensor", static_cast<uint16_t>(0xFFFF), 3}},
-};
+#include "Jolt/Physics/Collision/CastResult.h"
+#include "Jolt/Physics/Collision/RayCast.h"
+#include "Jolt/RegisterTypes.h"
+
+#include "Utils/Log.hpp"
+#include "Utils/Profiler.hpp"
+
+namespace ox {
+Physics* Physics::_instance = nullptr;
 
 static void TraceImpl(const char* inFMT, ...) {
   va_list list;
@@ -29,14 +25,14 @@ static void TraceImpl(const char* inFMT, ...) {
   vsnprintf(buffer, sizeof(buffer), inFMT, list);
   va_end(list);
 
-  OX_CORE_TRACE("{}", buffer);
+  OX_LOG_INFO("{}", buffer);
 }
 
 #ifdef JPH_ENABLE_ASSERTS
-  static bool AssertFailedImpl(const char* inExpression, const char* inMessage, const char* inFile, JPH::uint inLine) {
-    OX_CORE_ERROR("{0}:{1}:{2} {3}", inFile, inLine, inExpression, inMessage != nullptr ? inMessage : "");
-    return true;
-  };
+static bool AssertFailedImpl(const char* inExpression, const char* inMessage, const char* inFile, JPH::uint inLine) {
+  OX_LOG_ERROR("{0}:{1}:{2} {3}", inFile, inLine, inExpression, inMessage != nullptr ? inMessage : "");
+  return true;
+};
 #endif
 
 void Physics::init() {
@@ -46,53 +42,74 @@ void Physics::init() {
   // Install callbacks
   JPH::Trace = TraceImpl;
 #ifdef JPH_ENABLE_ASSERTS
-    JPH::AssertFailed = AssertFailedImpl;
+  JPH::AssertFailed = AssertFailedImpl;
 #endif
 
   JPH::Factory::sInstance = new JPH::Factory();
   JPH::RegisterTypes();
 
-  s_TempAllocator = new JPH::TempAllocatorImpl(10 * 1024 * 1024);
+  debug_renderer = new PhysicsDebugRenderer();
 
-  s_JobSystem = new JPH::JobSystemThreadPool();
-  s_JobSystem->Init(JPH::cMaxPhysicsJobs, JPH::cMaxPhysicsBarriers, (int)std::thread::hardware_concurrency() - 1);
-  s_PhysicsSystem = new JPH::PhysicsSystem();
-  s_PhysicsSystem->Init(
-    MAX_BODIES,
-    0,
-    MAX_BODY_PAIRS,
-    MAX_CONTACT_CONSTRAINS,
-    s_layer_interface,
-    s_object_vs_broad_phase_layer_filter_interface,
-    s_object_layer_pair_filter_interface);
+  temp_allocator = new JPH::TempAllocatorImpl(10 * 1024 * 1024);
+
+  job_system = new JPH::JobSystemThreadPool();
+  job_system->Init(JPH::cMaxPhysicsJobs, JPH::cMaxPhysicsBarriers, (int)std::thread::hardware_concurrency() - 1);
+  physics_system = new JPH::PhysicsSystem();
+  physics_system->Init(MAX_BODIES,
+                       0,
+                       MAX_BODY_PAIRS,
+                       MAX_CONTACT_CONSTRAINS,
+                       layer_interface,
+                       object_vs_broad_phase_layer_filter_interface,
+                       object_layer_pair_filter_interface);
+}
+
+void Physics::set_instance() {
+  if (_instance == nullptr)
+    _instance = App::get_system<Physics>();
+  JPH::Factory::sInstance = new JPH::Factory();
+  JPH::RegisterTypes();
 }
 
 void Physics::step(float physicsTs) {
   OX_SCOPED_ZONE;
 
-  OX_CORE_ASSERT(s_PhysicsSystem, "Physics system not initialized")
+  OX_CHECK_NULL(physics_system, "Physics system not initialized");
 
-  s_PhysicsSystem->Update(physicsTs, 1, s_TempAllocator, s_JobSystem);
+  physics_system->Update(physicsTs, 1, temp_allocator, job_system);
 }
 
-void Physics::shutdown() {
+void Physics::debug_draw() {
+  JPH::BodyManager::DrawSettings settings{};
+  settings.mDrawShape = true;
+  settings.mDrawShapeWireframe = true;
+
+  physics_system->DrawBodies(settings, debug_renderer);
+}
+
+void Physics::deinit() {
   JPH::UnregisterTypes();
   delete JPH::Factory::sInstance;
   JPH::Factory::sInstance = nullptr;
-  delete s_TempAllocator;
-  delete s_PhysicsSystem;
-  delete s_JobSystem;
+  delete temp_allocator;
+  delete physics_system;
+  delete job_system;
+  delete debug_renderer;
 }
 
 JPH::PhysicsSystem* Physics::get_physics_system() {
   OX_SCOPED_ZONE;
 
-  OX_CORE_ASSERT(s_PhysicsSystem, "Physics system not initialized")
+  OX_CHECK_NULL(_instance->physics_system, "Physics system not initialized");
 
-  return s_PhysicsSystem;
+  return _instance->physics_system;
 }
 
-JPH::BodyInterface& Physics::get_body_interface() {
-  return get_physics_system()->GetBodyInterface();
+JPH::AllHitCollisionCollector<JPH::RayCastBodyCollector> Physics::cast_ray(const RayCast& ray_cast) {
+  JPH::AllHitCollisionCollector<JPH::RayCastBodyCollector> collector;
+  const JPH::RayCast ray{math::to_jolt(ray_cast.get_origin()), math::to_jolt(ray_cast.get_direction())};
+  _instance->get_broad_phase_query().CastRay(ray, collector);
+
+  return collector;
 }
-}
+} // namespace ox

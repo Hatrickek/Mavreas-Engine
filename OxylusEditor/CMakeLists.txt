@@ -1,14 +1,26 @@
 set(PROJECT_NAME OxylusEditor)
 
 # Source groups
-file(GLOB src "src/*.h" "src/*.cpp")
+file(GLOB src "src/*.h" "src/*.hpp" "src/*.cpp")
 source_group("src" FILES ${src})
-file(GLOB_RECURSE Panels "src/Panels/*.h" "src/Panels/*.cpp" )
+file(GLOB_RECURSE Panels "src/Panels/*.h" "src/Panels/*.hpp" "src/Panels/*.cpp" )
 source_group("src/Panels" FILES ${Panels})
-file(GLOB_RECURSE Utils "src/Utils/*.h" "src/Utils/*.cpp" )
+file(GLOB_RECURSE Utils "src/Utils/*.h" "src/Utils/*.hpp" "src/Utils/*.cpp" )
 source_group("src/Utils" FILES ${Utils})
 
-set(ALL_FILES ${src} ${Panels} ${Utils})
+set(EDITOR_SOURCE_FILES ${src} ${Panels} ${Utils})
+
+# Shaders
+if(MSVC)
+    file(GLOB_RECURSE Shaders "Resources/Shaders/*.hlsl" "Resources/Shaders/*.hlsli" 
+                              "Resources/Shaders/*.glsl" "Resources/Shaders/*.frag" "Resources/Shaders/*.vert" "Resources/Shaders/*.comp")
+    source_group("Shaders" FILES ${Shaders})
+
+    set(ALL_FILES ${EDITOR_SOURCE_FILES} ${Shaders})
+    set_source_files_properties(${Shaders} PROPERTIES VS_TOOL_OVERRIDE "None") # Don't compile shaders with VS
+else() 
+    set(ALL_FILES ${EDITOR_SOURCE_FILES})
+endif()
 
 # Target
 add_executable(${PROJECT_NAME} ${ALL_FILES})
@@ -21,25 +33,6 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
     TARGET_NAME_RELEASE "OxylusEditor"
     TARGET_NAME_Distribution    "OxylusEditor"
 )
-
-# MSVC runtime library
-get_property(MSVC_RUNTIME_LIBRARY_DEFAULT TARGET ${PROJECT_NAME} PROPERTY MSVC_RUNTIME_LIBRARY)
-string(CONCAT "MSVC_RUNTIME_LIBRARY_STR"
-  $<$<CONFIG:Debug>:
-  MultiThreadedDebug
-  >
-  $<$<CONFIG:Release>:
-  MultiThreaded
-  >
-  $<$<CONFIG:Distribution>:
-  MultiThreaded
-  >
-  $<$<NOT:$<OR:$<CONFIG:Debug>,
-  $<CONFIG:Release>,
-  $<CONFIG:Distribution>
-  >>:${MSVC_RUNTIME_LIBRARY_DEFAULT}>
-  )
-set_target_properties(${PROJECT_NAME} PROPERTIES MSVC_RUNTIME_LIBRARY ${MSVC_RUNTIME_LIBRARY_STR})
 
 # Include directories
 target_include_directories(${PROJECT_NAME} PUBLIC
@@ -70,9 +63,10 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE
 
 # Compile and link options
 if(MSVC)
+    set_property(TARGET ${PROJECT_NAME} PROPERTY VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/OxylusEditor")
     target_compile_options(${PROJECT_NAME} PRIVATE PRIVATE /std:c++20 /permissive-)
     target_link_options(${PROJECT_NAME} PRIVATE PRIVATE /DEBUG:FULL)
-	  set(CMAKE_SHARED_LINKER_FLAGS_DISTRIBUTION ${CMAKE_SHARED_LINKER_FLAGS})
+	set(CMAKE_SHARED_LINKER_FLAGS_DISTRIBUTION ${CMAKE_SHARED_LINKER_FLAGS})
     set(CMAKE_EXE_LINKER_FLAGS_DISTRIBUTION ${CMAKE_EXE_LINKER_FLAGS})
 endif()
 
@@ -87,7 +81,3 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
 
 # Copy resource folder
 add_custom_command(TARGET OxylusEditor POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/OxylusEditor/Resources $<TARGET_FILE_DIR:OxylusEditor>/Resources)
-
-# Set working directory
-set(VS_DEBUGGER_WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/OxylusEditor)
-

@@ -1,10 +1,11 @@
-#include "OxMath.h"
+#include "OxMath.hpp"
 
 #include <glm/gtx/matrix_decompose.hpp>
+#include <Jolt/Jolt.h>
+#include <Jolt/Geometry/AABox.h>
 
-
-namespace Oxylus::Math {
-bool decompose_transform(const glm::mat4& transform, glm::vec3& translation, glm::vec3& rotation, glm::vec3& scale) {
+namespace ox::math {
+bool decompose_transform(const float4x4& transform, float3& translation, float3& rotation, float3& scale) {
   OX_SCOPED_ZONE;
   using namespace glm;
   using T = float;
@@ -16,9 +17,7 @@ bool decompose_transform(const glm::mat4& transform, glm::vec3& translation, glm
     return false;
 
   // First, isolate perspective.  This is the messiest.
-  if (epsilonNotEqual(local_matrix[0][3], static_cast<T>(0), epsilon<T>()) || epsilonNotEqual(local_matrix[1][3],
-        static_cast<T>(0),
-        epsilon<T>()) ||
+  if (epsilonNotEqual(local_matrix[0][3], static_cast<T>(0), epsilon<T>()) || epsilonNotEqual(local_matrix[1][3], static_cast<T>(0), epsilon<T>()) ||
       epsilonNotEqual(local_matrix[2][3], static_cast<T>(0), epsilon<T>())) {
     // Clear the perspective partition
     local_matrix[0][3] = local_matrix[1][3] = local_matrix[2][3] = static_cast<T>(0);
@@ -26,10 +25,10 @@ bool decompose_transform(const glm::mat4& transform, glm::vec3& translation, glm
   }
 
   // Next take care of translation (easy).
-  translation = vec3(local_matrix[3]);
+  translation = float3(local_matrix[3]);
   local_matrix[3] = vec4(0, 0, 0, local_matrix[3].w);
 
-  vec3 row[3];
+  float3 row[3];
 
   // Now get scale and shear.
   for (length_t i = 0; i < 3; ++i)
@@ -48,8 +47,7 @@ bool decompose_transform(const glm::mat4& transform, glm::vec3& translation, glm
   if (cos(rotation.y) != 0.0f) {
     rotation.x = atan2(row[1][2], row[2][2]);
     rotation.z = atan2(row[0][1], row[0][0]);
-  }
-  else {
+  } else {
     rotation.x = atan2(-row[2][0], row[1][1]);
     rotation.z = 0;
   }
@@ -57,9 +55,7 @@ bool decompose_transform(const glm::mat4& transform, glm::vec3& translation, glm
   return true;
 }
 
-float lerp(float a, float b, float t) {
-  return a + t * (b - a);
-}
+float lerp(float a, float b, float t) { return a + t * (b - a); }
 
 float inverse_lerp(float a, float b, float value) {
   OX_SCOPED_ZONE;
@@ -77,7 +73,7 @@ float inverse_lerp_clamped(float a, float b, float value) {
   return glm::clamp((value - a) / den, 0.0f, 1.0f);
 }
 
-Vec2 world_to_screen(const Vec3& world_pos, const glm::mat4& mvp, const float width, float height, const float win_pos_x, const float win_pos_y) {
+float2 world_to_screen(const float3& world_pos, const float4x4& mvp, const float width, float height, const float win_pos_x, const float win_pos_y) {
   Vec4 trans = mvp * Vec4(world_pos, 1.0f);
   trans *= 0.5f / trans.w;
   trans += Vec4(0.5f, 0.5f, 0.0f, 0.0f);
@@ -88,4 +84,30 @@ Vec2 world_to_screen(const Vec3& world_pos, const glm::mat4& mvp, const float wi
   trans.y += win_pos_y;
   return {trans.x, trans.y};
 }
+
+Vec4 transform(const Vec4& vec, const Mat4& view) {
+  auto result = Vec4(vec.z) * view[2] + view[3];
+  result = Vec4(vec.y) * view[1] + result;
+  result = Vec4(vec.x) * view[0] + result;
+  return result;
 }
+Vec4 transform_normal(const Vec4& vec, const Mat4& mat) {
+  auto result = Vec4(vec.z) * mat[2];
+  result = Vec4(vec.y) * mat[1] + result;
+  result = Vec4(vec.x) * mat[0] + result;
+  return result;
+}
+Vec4 transform_coord(const Vec4& vec, const Mat4& view) {
+  auto result = Vec4(vec.z) * view[2] + view[3];
+  result = Vec4(vec.y) * view[1] + result;
+  result = Vec4(vec.x) * view[0] + result;
+  result = result / Vec4(result.w);
+  return result;
+}
+
+float3 from_jolt(const JPH::Vec3& vec) { return {vec.GetX(), vec.GetY(), vec.GetZ()}; }
+JPH::Vec3 to_jolt(const float3& vec) { return {vec.x, vec.y, vec.z}; }
+float4 from_jolt(const JPH::Vec4& vec) { return {vec.GetX(), vec.GetY(), vec.GetZ(), vec.GetW()}; }
+JPH::Vec4 to_jolt(const float4& vec) { return {vec.x, vec.y, vec.z, vec.w}; }
+AABB from_jolt(const JPH::AABox& aabb) { return {from_jolt(aabb.mMin), from_jolt(aabb.mMax)}; }
+} // namespace ox::math

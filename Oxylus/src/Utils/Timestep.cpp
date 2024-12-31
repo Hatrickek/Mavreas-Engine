@@ -1,9 +1,9 @@
-﻿#include "Timestep.h"
+﻿#include "Timestep.hpp"
 
-#include "Profiler.h"
-#include "Timer.h"
+#include "Profiler.hpp"
+#include "Timer.hpp"
 
-namespace Oxylus {
+namespace ox {
 Timestep::Timestep()
   : m_timestep(0.0)
     , m_last_time(0.0)

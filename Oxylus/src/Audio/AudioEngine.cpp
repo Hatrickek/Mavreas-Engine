@@ -1,31 +1,31 @@
-#include "AudioEngine.h"
+#include "AudioEngine.hpp"
 
 #define MINIAUDIO_IMPLEMENTATION
 
 #include <miniaudio.h>
 
-#include "Utils/Log.h"
+#include "Utils/Log.hpp"
+#include "Utils/Profiler.hpp"
 
-namespace Oxylus {
-ma_engine* AudioEngine::s_engine;
-
+namespace ox {
 void AudioEngine::init() {
+  OX_SCOPED_ZONE;
   ma_engine_config config = ma_engine_config_init();
   config.listenerCount = 1;
 
-  s_engine = new ma_engine();
-  const ma_result result = ma_engine_init(&config, s_engine);
-  OX_CORE_ASSERT(result == MA_SUCCESS, "Failed to initialize audio engine!")
+  engine = new ma_engine();
+  const ma_result result = ma_engine_init(&config, engine);
+  OX_CHECK_EQ(result, MA_SUCCESS, "Failed to initialize audio engine!");
 
-  OX_CORE_INFO("Initalized audio engine.");
+  OX_LOG_INFO("Initalized audio engine.");
 }
 
-void AudioEngine::shutdown() {
-  ma_engine_uninit(s_engine);
-  delete s_engine;
+void AudioEngine::deinit() {
+  ma_engine_uninit(engine);
+  delete engine;
 }
 
-AudioEngineInternal AudioEngine::get_engine() {
-  return s_engine;
+ma_engine* AudioEngine::get_engine() const {
+  return engine;
 }
 }

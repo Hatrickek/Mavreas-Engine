@@ -1,120 +1,124 @@
-#include "AssetManager.h"
+#include "AssetManager.hpp"
 
-#include "MaterialSerializer.h"
-#include "Core/Project.h"
-#include "Render/Mesh.h"
+#include "Assets/Texture.hpp"
+#include "Audio/AudioSource.hpp"
+#include "Core/App.hpp"
+#include "Render/Mesh.hpp"
 
-#include "Utils/Log.h"
-#include "Utils/Profiler.h"
+#include "Utils/Log.hpp"
+#include "Utils/Profiler.hpp"
 
-namespace Oxylus {
-AssetManager::AssetLibrary AssetManager::s_library;
-std::mutex AssetManager::s_asset_mutex;
+namespace ox {
+AssetManager* AssetManager::_instance = nullptr;
 
-std::filesystem::path AssetManager::get_asset_file_system_path(const std::filesystem::path& path) {
-  return Project::get_asset_directory() / path;
+void AssetManager::set_instance() {
+  if (_instance == nullptr)
+    _instance = App::get_system<AssetManager>();
 }
 
-Ref<TextureAsset> AssetManager::get_texture_asset(const TextureLoadInfo& info) {
-  if (s_library.texture_assets.contains(info.path)) {
-    return s_library.texture_assets[info.path];
+Shared<Texture> AssetManager::get_texture_asset(const TextureLoadInfo& info) {
+  if (_instance->_state.texture_assets.contains(info.path)) {
+    return _instance->_state.texture_assets[info.path];
   }
 
   return load_texture_asset(info.path, info);
 }
 
-Ref<TextureAsset> AssetManager::get_texture_asset(const std::string& name, const TextureLoadInfo& info) {
-  if (s_library.texture_assets.contains(name)) {
-    return s_library.texture_assets[name];
+// TODO: Doesn't respect virtual dirs
+Shared<Texture> AssetManager::get_texture_asset(const std::string& name, const TextureLoadInfo& info) {
+  if (_instance->_state.texture_assets.contains(name)) {
+    return _instance->_state.texture_assets[name];
   }
 
   return load_texture_asset(name, info);
 }
 
-Ref<Mesh> AssetManager::get_mesh_asset(const std::string& path, const int32_t loadingFlags) {
+// TODO: Doesn't respect virtual dirs
+AssetTask<Texture>* AssetManager::get_texture_asset_future(const TextureLoadInfo& info) {
+  const auto* t = &_instance->_state.texture_tasks.emplace_back(create_unique<AssetTask<Texture>>([info] {
+    if (_instance->_state.texture_assets.contains(info.path)) {
+      return _instance->_state.texture_assets[info.path];
+    }
+
+    return load_texture_asset(info.path, info);
+  }));
+
+  return t->get();
+}
+
+Shared<Mesh> AssetManager::get_mesh_asset(const std::string& path, const uint32_t loadingFlags) {
   OX_SCOPED_ZONE;
-  if (s_library.mesh_assets.contains(path)) {
-    return s_library.mesh_assets[path];
+  if (_instance->_state.mesh_assets.contains(path)) {
+    return _instance->_state.mesh_assets[path];
   }
 
   return load_mesh_asset(path, loadingFlags);
 }
 
-Ref<TextureAsset> AssetManager::load_texture_asset(const std::string& path) {
-  OX_SCOPED_ZONE;
+// TODO: Doesn't respect virtual dirs
+AssetTask<Mesh>* AssetManager::get_mesh_asset_future(const std::string& path, uint32_t loadingFlags) {
+  const auto* t = &_instance->_state.mesh_tasks.emplace_back(create_unique<AssetTask<Mesh>>([path, loadingFlags] {
+    if (_instance->_state.mesh_assets.contains(path)) {
+      return _instance->_state.mesh_assets[path];
+    }
 
-  std::lock_guard lock(s_asset_mutex);
+    return load_mesh_asset(path, loadingFlags);
+  }));
 
-  Ref<TextureAsset> texture = create_ref<TextureAsset>(path);
-  return s_library.texture_assets.emplace(path, texture).first->second;
+  return t->get();
 }
 
-Ref<TextureAsset> AssetManager::load_texture_asset(const std::string& path, const TextureLoadInfo& info) {
+Shared<AudioSource> AssetManager::get_audio_asset(const std::string& path) {
   OX_SCOPED_ZONE;
+  if (_instance->_state.audio_assets.contains(path)) {
+    return _instance->_state.audio_assets[path];
+  }
 
-  std::lock_guard lock(s_asset_mutex);
-
-  Ref<TextureAsset> texture = create_ref<TextureAsset>(info);
-  return s_library.texture_assets.emplace(path, texture).first->second;
+  return load_audio_asset(path);
 }
 
-Ref<Mesh> AssetManager::load_mesh_asset(const std::string& path, int32_t loadingFlags) {
+Shared<Texture> AssetManager::load_texture_asset(const std::string& path, const TextureLoadInfo& info) {
   OX_SCOPED_ZONE;
-  Ref<Mesh> asset = create_ref<Mesh>(path, loadingFlags);
-  return s_library.mesh_assets.emplace(path, asset).first->second;
+
+  const auto resolved_path = App::get_system<VFS>()->resolve_physical_dir(info.path);
+  TextureLoadInfo new_info = info;
+  new_info.path = resolved_path;
+
+  Shared<Texture> texture = create_shared<Texture>(new_info);
+  texture->asset_id = (uint32_t)_instance->_state.texture_assets.size();
+  texture->asset_path = path;
+  return _instance->_state.texture_assets.emplace(path, texture).first->second;
+}
+
+Shared<Mesh> AssetManager::load_mesh_asset(const std::string& path, uint32_t loadingFlags) {
+  OX_SCOPED_ZONE;
+  const auto resolved_path = App::get_system<VFS>()->resolve_physical_dir(path);
+  Shared<Mesh> asset = create_shared<Mesh>(resolved_path);
+  asset->asset_id = (uint32_t)_instance->_state.mesh_assets.size();
+  asset->asset_path = path;
+  return _instance->_state.mesh_assets.emplace(path, asset).first->second;
+}
+
+Shared<AudioSource> AssetManager::load_audio_asset(const std::string& path) {
+  OX_SCOPED_ZONE;
+  const auto resolved_path = App::get_system<VFS>()->resolve_physical_dir(path);
+  Shared<AudioSource> source = create_shared<AudioSource>(resolved_path);
+  source->asset_path = path;
+  return _instance->_state.audio_assets.emplace(path, source).first->second;
 }
 
 void AssetManager::free_unused_assets() {
   OX_SCOPED_ZONE;
-  for (auto& [handle, asset] : s_library.mesh_assets) {
-    if (asset.use_count())
-      return;
-    s_library.mesh_assets.erase(handle);
-  }
-  for (auto& [handle, asset] : s_library.texture_assets) {
-    if (asset.use_count())
-      return;
-    s_library.texture_assets.erase(handle);
-  }
+  const auto m_count = std::erase_if(_instance->_state.mesh_assets,
+                                     [](const std::pair<std::string, Shared<Mesh>>& pair) { return pair.second.use_count() <= 1; });
+
+  if (m_count > 0)
+    OX_LOG_INFO("Cleaned up {} mesh assets.", m_count);
+
+  const auto t_count = std::erase_if(_instance->_state.texture_assets,
+                                     [](const std::pair<std::string, Shared<Texture>>& pair) { return pair.second.use_count() <= 1; });
+
+  if (t_count > 0)
+    OX_LOG_INFO("Cleaned up {} texture assets.", t_count);
 }
-
-void AssetManager::package_assets() {
-  free_unused_assets();
-
-  // TODO(hatrickek): Pack materials inside of meshes(glb).
-  // TODO(hatrickek): Pack/compress audio files.
-
-  constexpr auto meshDirectory = "Assets/Objects";
-  constexpr auto textureDirectory = "Assets/Textures";
-  //constexpr auto soundsDirectory = "Assets/Sounds";
-  //constexpr auto scenesDirectory = "Assets/Scenes";
-
-  std::filesystem::create_directory("Assets");
-
-  // Package mesh files
-  for (auto& [path, asset] : s_library.mesh_assets) {
-    const auto filePath = std::filesystem::path(path);
-    auto outPath = std::filesystem::path(meshDirectory) / filePath.filename();
-    outPath = outPath.generic_string();
-    auto dir = meshDirectory;
-    std::filesystem::create_directory(dir);
-    const auto exported = Mesh::export_as_binary(path, outPath.string());
-    if (!exported)
-      OX_CORE_ERROR("Couldn't export mesh asset: {}", path);
-    else
-      OX_CORE_INFO("Exported mesh asset to: {}", outPath.string());
-  }
-
-  // Package texture files
-  for (auto& [path, asset] : s_library.texture_assets) {
-    const auto filePath = std::filesystem::path(path);
-    const auto outPath = std::filesystem::path(textureDirectory) / filePath.filename();
-    std::filesystem::create_directory(textureDirectory);
-    const auto exported = copy_file(path, outPath);
-    if (!exported)
-      OX_CORE_ERROR("Couldn't export image asset: {}", path);
-    else
-      OX_CORE_INFO("Exported image asset to: {}", outPath.string());
-  }
-}
-}
+} // namespace ox

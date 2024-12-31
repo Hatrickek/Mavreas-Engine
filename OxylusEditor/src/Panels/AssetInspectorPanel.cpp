@@ -1,11 +1,11 @@
-﻿#include "AssetInspectorPanel.h"
+﻿#include "AssetInspectorPanel.hpp"
 
 #include <icons/IconsMaterialDesignIcons.h>
 
-#include "EditorLayer.h"
-#include "Assets/AssetManager.h"
+#include "Assets/AssetManager.hpp"
+#include "EditorLayer.hpp"
 
-namespace Oxylus {
+namespace ox {
   AssetInspectorPanel::AssetInspectorPanel() : EditorPanel("AssetInspector", ICON_MDI_INFORMATION) { }
 
   void AssetInspectorPanel::on_update() { }

@@ -1,10 +1,11 @@
-#include "EditorSettingsPanel.h"
+#include "EditorSettingsPanel.hpp"
 
-#include "imgui.h"
-#include "Core/Application.h"
 #include "icons/IconsMaterialDesignIcons.h"
+#include "imgui.h"
 
-namespace Oxylus {
+#include "UI/ImGuiLayer.hpp"
+
+namespace ox {
   EditorSettingsPanel::EditorSettingsPanel() : EditorPanel("Editor Settings", ICON_MDI_COGS, false) { }
 
   void EditorSettingsPanel::on_imgui_render() {
@@ -13,7 +14,7 @@ namespace Oxylus {
       //Theme
       const char* themes[] = {"Dark", "White"};
       int themeIndex = 0;
-      if (ImGui::Combo("Theme", &themeIndex, themes, OX_ARRAYSIZE(themes))) {
+      if (ImGui::Combo("Theme", &themeIndex, themes, std::size(themes))) {
         ImGuiLayer::apply_theme(!(bool)themeIndex);
       }
       on_end();

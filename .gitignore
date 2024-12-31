@@ -1,5 +1,11 @@
 # Prerequisites
 *.d
+*.bat
+*.dll
+*.cmake
+*.toml
+*.cap
+*.ini
 
 # Compiled Object files
 *.slo
@@ -40,6 +46,7 @@
 /bin-int
 /.cache
 /OxylusEditor/Resources/Shaders/Compiled
+/OxylusEditor/SandboxProject
 /OxylusEditor/logs
 *.ccls
 *.vcxproj

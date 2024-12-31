@@ -1,531 +1,512 @@
-#include "EntitySerializer.h"
+#include "EntitySerializer.hpp"
 
+#include <filesystem>
 #include <fstream>
 
-#include "SceneRenderer.h"
+#include "Core/Base.hpp"
+#include "Core/FileSystem.hpp"
+#include "Core/Project.hpp"
+#include "Core/Systems/SystemManager.hpp"
+#include "Scene.hpp"
+#include "Scene/Components.hpp"
+#include "SceneRenderer.hpp"
 
-#include "Assets/AssetManager.h"
-#include "Assets/MaterialSerializer.h"
+#include "Assets/AssetManager.hpp"
 
-#include "Core/Entity.h"
-#include "Core/YamlHelpers.h"
+#include "Core/App.hpp"
+#include "Core/FileSystem.hpp"
 
-#include "Render/SceneRendererEvents.h"
+#include "Entity.hpp"
+#include "Utils/Archive.hpp"
 
-#include "Utils/FileUtils.h"
+#include "Utils/Log.hpp"
+#include "Utils/Toml.hpp"
 
-namespace Oxylus {
-template <typename T>
-void set_enum(const ryml::ConstNodeRef& node, T& data) {
-  int type = 0;
-  node >> type;
-  data = (T)type;
-}
+namespace ox {
+#define GET_STRING(node, component, name) component.name = node->as_table()->get(#name)->as_string()->get()
+#define GET_STRING2(node, name) node->as_table()->get(name)->as_string()->get()
+#define GET_FLOAT(node, component, name) component.name = (float)node->as_table()->get(#name)->as_floating_point()->get()
+#define GET_FLOAT2(node, name) (float)node->as_table()->get(name)->as_floating_point()->get()
+#define GET_UINT32(node, component, name) component.name = (uint32_t)node->as_table()->get(#name)->as_integer()->get()
+#define GET_UINT322(node, name) (uint32_t) node->as_table()->get(name)->as_integer()->get()
+#define GET_BOOL(node, component, name) component.name = node->as_table()->get(#name)->as_boolean()->get()
+#define GET_BOOL2(node, name) node->as_table()->get(name)->as_boolean()->get()
+#define GET_ARRAY(node, name) node->as_table()->get(name)->as_array()
 
-void EntitySerializer::serialize_entity(Scene* scene, ryml::NodeRef& entities, Entity entity) {
-  ryml::NodeRef entity_node = entities.append_child({ryml::MAP});
+#define TBL_FIELD(c, field) {#field, c.field}
+#define TBL_FIELD_ARR(c, field) {#field, get_toml_array(c.field)}
 
-  if (entity.has_component<TagComponent>()) {
-    const auto& tag = entity.get_component<TagComponent>();
+void EntitySerializer::serialize_entity(toml::array* entities, Scene* scene, Entity entity) {
+  entities->push_back(toml::table{{"uuid", std::to_string((uint64_t)eutil::get_uuid(scene->registry, entity))}});
 
-    entity_node["Entity"] << entity.get_uuid();
-    auto node = entity_node["TagComponent"];
-    node |= ryml::MAP;
-    node["Tag"] << tag.tag;
+  if (scene->registry.all_of<TagComponent>(entity)) {
+    const auto& tag = scene->registry.get<TagComponent>(entity);
+
+    const auto table = toml::table{
+      TBL_FIELD(tag, tag),
+      TBL_FIELD(tag, enabled),
+    };
+
+    entities->push_back(toml::table{{"tag_component", table}});
   }
 
-  if (entity.has_component<RelationshipComponent>()) {
-    const auto& [Parent, Children] = entity.get_component<RelationshipComponent>();
+  if (scene->registry.all_of<RelationshipComponent>(entity)) {
+    const auto& [parent, children] = scene->registry.get<RelationshipComponent>(entity);
 
-    auto node = entity_node["RelationshipComponent"];
-    node |= ryml::MAP;
-    node["Parent"] << Parent;
-    node["ChildCount"] << (uint32_t)Children.size();
-    auto children_node = node["Children"];
-    children_node |= ryml::SEQ;
-    for (size_t i = 0; i < Children.size(); i++) {
-      children_node.append_child() << Children[i];
-    }
+    toml::array children_array = {};
+    for (auto child : children)
+      children_array.push_back(std::to_string((uint64_t)child));
+
+    const auto table = toml::table{
+      {"parent", std::to_string((uint64_t)parent)},
+      {"children", children_array},
+    };
+
+    entities->push_back(toml::table{{"relationship_component", table}});
   }
 
-  if (entity.has_component<TransformComponent>()) {
-    const auto& tc = entity.get_component<TransformComponent>();
-    auto node = entity_node["TransformComponent"];
-    node |= ryml::MAP;
-    auto translation = node["Translation"];
-    auto rotation = node["Rotation"];
-    auto scale = node["Scale"];
-    glm::write(&translation, tc.position);
-    glm::write(&rotation, tc.rotation);
-    glm::write(&scale, tc.scale);
+  if (scene->registry.all_of<TransformComponent>(entity)) {
+    const auto& tc = scene->registry.get<TransformComponent>(entity);
+
+    const auto table = toml::table{
+      TBL_FIELD_ARR(tc, position),
+      TBL_FIELD_ARR(tc, rotation),
+      TBL_FIELD_ARR(tc, scale),
+    };
+
+    entities->push_back(toml::table{{"transform_component", table}});
   }
 
-  if (entity.has_component<MeshComponent>()) {
-    const auto& mrc = entity.get_component<MeshComponent>();
-    auto node = entity_node["MeshComponent"];
-    node |= ryml::MAP;
-    node["Mesh"] << mrc.mesh_base->path;
-    node["BaseNode"] << mrc.base_node;
-    node["NodeIndex"] << mrc.node_index;
+  if (scene->registry.all_of<MeshComponent>(entity)) {
+    const auto& mrc = scene->registry.get<MeshComponent>(entity);
+
+    const auto table = toml::table{{"mesh_path", mrc.mesh_base->get_path()}, TBL_FIELD(mrc, stationary), TBL_FIELD(mrc, cast_shadows)};
+
+    entities->push_back(toml::table{{"mesh_component", table}});
   }
 
-  if (entity.has_component<MaterialComponent>()) {
-    const auto& mc = entity.get_component<MaterialComponent>();
-    auto node = entity_node["MaterialComponent"];
-    node |= ryml::MAP;
-    if (mc.using_material_asset)
-      node["Path"] << mc.materials[0]->path;
+  if (scene->registry.all_of<LightComponent>(entity)) {
+    const auto& light = scene->registry.get<LightComponent>(entity);
+
+    const auto table = toml::table{
+      {"type", (int)light.type},
+      TBL_FIELD(light, color_temperature_mode),
+      TBL_FIELD(light, temperature),
+      TBL_FIELD_ARR(light, color),
+      TBL_FIELD(light, intensity),
+      TBL_FIELD(light, range),
+      TBL_FIELD(light, radius),
+      TBL_FIELD(light, length),
+      TBL_FIELD(light, outer_cone_angle),
+      TBL_FIELD(light, inner_cone_angle),
+      TBL_FIELD(light, cast_shadows),
+      TBL_FIELD(light, shadow_map_res),
+    };
+
+    entities->push_back(toml::table{{"light_component", table}});
   }
 
-  if (entity.has_component<LightComponent>()) {
-    const auto& light = entity.get_component<LightComponent>();
-    auto node = entity_node["LightComponent"];
-    node |= ryml::MAP;
-    auto color_node = node["Color"];
-    node["Type"] << (int)light.type;
-    node["UseColorTemperatureMode"] << light.use_color_temperature_mode;
-    node["Temperature"] << light.temperature;
-    glm::write(&color_node, light.color);
-    node["Intensity"] << light.intensity;
-    node["Range"] << light.range;
-    node["CutOffAngle"] << light.cut_off_angle;
-    node["OuterCutOffAngle"] << light.outer_cut_off_angle;
-    node["ShadowQuality"] << (int)light.shadow_quality;
+  if (scene->registry.all_of<PostProcessProbe>(entity)) {
+    const auto& probe = scene->registry.get<PostProcessProbe>(entity);
+
+    const auto table = toml::table{
+      TBL_FIELD(probe, vignette_enabled),
+      TBL_FIELD(probe, vignette_intensity),
+      TBL_FIELD(probe, film_grain_enabled),
+      TBL_FIELD(probe, film_grain_intensity),
+      TBL_FIELD(probe, chromatic_aberration_enabled),
+      TBL_FIELD(probe, chromatic_aberration_intensity),
+      TBL_FIELD(probe, sharpen_enabled),
+      TBL_FIELD(probe, sharpen_intensity),
+    };
+
+    entities->push_back(toml::table{{"post_process_probe", table}});
   }
 
-  if (entity.has_component<SkyLightComponent>()) {
-    const auto& light = entity.get_component<SkyLightComponent>();
-    auto node = entity_node["SkyLightComponent"];
-    node |= ryml::MAP;
-    std::string path = light.cubemap ? light.cubemap->get_path() : "";
-    node["ImagePath"] << path;
-  }
+  if (scene->registry.all_of<CameraComponent>(entity)) {
+    const auto& camera = scene->registry.get<CameraComponent>(entity);
 
-  if (entity.has_component<PostProcessProbe>()) {
-    const auto& probe = entity.get_component<PostProcessProbe>();
-    auto node = entity_node["PostProcessProbe"];
-    node |= ryml::MAP;
-    node["VignetteEnabled"] << probe.vignette_enabled;
-    node["VignetteIntensity"] << probe.vignette_intensity;
+    // TODO: serialize the rest
+    const auto table = toml::table{
+      {"projection", (uint32)camera.camera->get_projection()},
+      {"fov", camera.camera->get_fov()},
+      {"near", camera.camera->get_near()},
+      {"far", camera.camera->get_far()},
+      {"zoom", camera.camera->get_zoom()},
+    };
 
-    node["FilmGrainEnabled"] << probe.film_grain_enabled;
-    node["FilmGrainIntensity"] << probe.film_grain_intensity;
-
-    node["ChromaticAberrationEnabled"] << probe.chromatic_aberration_enabled;
-    node["ChromaticAberrationIntensity"] << probe.chromatic_aberration_intensity;
-
-    node["SharpenEnabled"] << probe.sharpen_enabled;
-    node["SharpenIntensity"] << probe.sharpen_intensity;
-  }
-
-  if (entity.has_component<CameraComponent>()) {
-    const auto& camera = entity.get_component<CameraComponent>();
-    auto node = entity_node["CameraComponent"];
-    node |= ryml::MAP;
-    node["FOV"] << camera.system->get_fov();
-    node["NearClip"] << camera.system->get_near();
-    node["FarClip"] << camera.system->get_far();
+    entities->push_back(toml::table{{"camera_component", table}});
   }
 
   // Physics
-  if (entity.has_component<RigidbodyComponent>()) {
-    auto node = entity_node["RigidbodyComponent"];
-    node |= ryml::MAP;
+  if (scene->registry.all_of<RigidbodyComponent>(entity)) {
+    const auto& rb = scene->registry.get<RigidbodyComponent>(entity);
 
-    const auto& rb = entity.get_component<RigidbodyComponent>();
-    node["Type"] << static_cast<int>(rb.type);
-    node["Mass"] << rb.mass;
-    node["LinearDrag"] << rb.linear_drag;
-    node["AngularDrag"] << rb.angular_drag;
-    node["GravityScale"] << rb.gravity_scale;
-    node["AllowSleep"] << rb.allow_sleep;
-    node["Awake"] << rb.awake;
-    node["Continuous"] << rb.continuous;
-    node["Interpolation"] << rb.interpolation;
-    node["IsSensor"] << rb.is_sensor;
+    const auto table = toml::table{
+      {"allowed_dofs", (int)rb.allowed_dofs},
+      {"type", (int)rb.type},
+      TBL_FIELD(rb, mass),
+      TBL_FIELD(rb, linear_drag),
+      TBL_FIELD(rb, angular_drag),
+      TBL_FIELD(rb, gravity_scale),
+      TBL_FIELD(rb, allow_sleep),
+      TBL_FIELD(rb, awake),
+      TBL_FIELD(rb, continuous),
+      TBL_FIELD(rb, interpolation),
+      TBL_FIELD(rb, is_sensor),
+    };
+
+    entities->push_back(toml::table{{"rigidbody_component", table}});
   }
 
-  if (entity.has_component<BoxColliderComponent>()) {
-    auto node = entity_node["BoxColliderComponent"];
-    node |= ryml::MAP;
+  if (scene->registry.all_of<BoxColliderComponent>(entity)) {
+    const auto& bc = scene->registry.get<BoxColliderComponent>(entity);
 
-    const auto& bc = entity.get_component<BoxColliderComponent>();
-    node["Size"] << bc.size;
-    node["Offset"] << bc.offset;
-    node["Density"] << bc.density;
-    node["Friction"] << bc.friction;
-    node["Restitution"] << bc.restitution;
+    const auto table = toml::table{
+      TBL_FIELD_ARR(bc, size),
+      TBL_FIELD_ARR(bc, offset),
+      TBL_FIELD(bc, density),
+      TBL_FIELD(bc, friction),
+      TBL_FIELD(bc, restitution),
+    };
+
+    entities->push_back(toml::table{{"box_collider_component", table}});
   }
 
-  if (entity.has_component<SphereColliderComponent>()) {
-    auto node = entity_node["SphereColliderComponent"];
-    node |= ryml::MAP;
+  if (scene->registry.all_of<SphereColliderComponent>(entity)) {
+    const auto& sc = scene->registry.get<SphereColliderComponent>(entity);
 
-    const auto& sc = entity.get_component<SphereColliderComponent>();
-    node["Radius"] << sc.radius;
-    node["Offset"] << sc.offset;
-    node["Density"] << sc.density;
-    node["Friction"] << sc.friction;
-    node["Restitution"] << sc.restitution;
+    const auto table = toml::table{
+      TBL_FIELD(sc, radius),
+      TBL_FIELD_ARR(sc, offset),
+      TBL_FIELD(sc, density),
+      TBL_FIELD(sc, friction),
+      TBL_FIELD(sc, restitution),
+    };
+
+    entities->push_back(toml::table{{"sphere_collider_component", table}});
   }
 
-  if (entity.has_component<CapsuleColliderComponent>()) {
-    auto node = entity_node["CapsuleColliderComponent"];
-    node |= ryml::MAP;
+  if (scene->registry.all_of<CapsuleColliderComponent>(entity)) {
+    const auto& cc = scene->registry.get<CapsuleColliderComponent>(entity);
+    const auto table = toml::table{
+      TBL_FIELD(cc, height),
+      TBL_FIELD(cc, radius),
+      TBL_FIELD_ARR(cc, offset),
+      TBL_FIELD(cc, density),
+      TBL_FIELD(cc, friction),
+      TBL_FIELD(cc, restitution),
+    };
 
-    const auto& cc = entity.get_component<CapsuleColliderComponent>();
-    node["Height"] << cc.height;
-    node["Radius"] << cc.radius;
-    node["Offset"] << cc.offset;
-    node["Density"] << cc.density;
-    node["Friction"] << cc.friction;
-    node["Restitution"] << cc.restitution;
+    entities->push_back(toml::table{{"capsule_collider_component", table}});
   }
 
-  if (entity.has_component<TaperedCapsuleColliderComponent>()) {
-    auto node = entity_node["TaperedCapsuleColliderComponent"];
-    node |= ryml::MAP;
+  if (scene->registry.all_of<TaperedCapsuleColliderComponent>(entity)) {
+    const auto& tcc = scene->registry.get<TaperedCapsuleColliderComponent>(entity);
 
-    const auto& tcc = entity.get_component<TaperedCapsuleColliderComponent>();
-    node["Height"] << tcc.height;
-    node["TopRadius"] << tcc.top_radius;
-    node["BottomRadius"] << tcc.bottom_radius;
-    node["Offset"] << tcc.offset;
-    node["Density"] << tcc.density;
-    node["Friction"] << tcc.friction;
-    node["Restitution"] << tcc.restitution;
+    const auto table = toml::table{
+      TBL_FIELD(tcc, height),
+      TBL_FIELD(tcc, top_radius),
+      TBL_FIELD_ARR(tcc, offset),
+      TBL_FIELD(tcc, density),
+      TBL_FIELD(tcc, friction),
+      TBL_FIELD(tcc, restitution),
+    };
+
+    entities->push_back(toml::table{{"tapered_capsule_collider_component", table}});
   }
 
-  if (entity.has_component<CylinderColliderComponent>()) {
-    auto node = entity_node["CylinderColliderComponent"];
-    node |= ryml::MAP;
+  if (scene->registry.all_of<CylinderColliderComponent>(entity)) {
+    const auto& cc = scene->registry.get<CylinderColliderComponent>(entity);
+    const auto table = toml::table{
+      TBL_FIELD(cc, height),
+      TBL_FIELD(cc, radius),
+      TBL_FIELD_ARR(cc, offset),
+      TBL_FIELD(cc, density),
+      TBL_FIELD(cc, friction),
+      TBL_FIELD(cc, restitution),
+    };
 
-    const auto& cc = entity.get_component<CapsuleColliderComponent>();
-    node["Height"] << cc.height;
-    node["Radius"] << cc.radius;
-    node["Offset"] << cc.offset;
-    node["Density"] << cc.density;
-    node["Friction"] << cc.friction;
-    node["Restitution"] << cc.restitution;
+    entities->push_back(toml::table{{"cylinder_collider_component", table}});
   }
 
-  if (entity.has_component<CharacterControllerComponent>()) {
-    auto node = entity_node["CharacterControllerComponent"];
-    node |= ryml::MAP;
+  if (scene->registry.all_of<MeshColliderComponent>(entity)) {
+    const auto& mc = scene->registry.get<MeshColliderComponent>(entity);
+    const auto table = toml::table{
+      TBL_FIELD_ARR(mc, offset),
+      TBL_FIELD(mc, friction),
+      TBL_FIELD(mc, restitution),
+    };
 
-    const auto& component = entity.get_component<CharacterControllerComponent>();
-
-    // Size
-    node["CharacterHeightStanding"] << component.character_height_standing;
-    node["CharacterRadiusStanding"] << component.character_radius_standing;
-    node["CharacterRadiusCrouching"] << component.character_radius_crouching;
-    node["CharacterHeightCrouching"] << component.character_height_crouching;
-
-    // Movement
-    node["ControlMovementDuringJump"] << component.control_movement_during_jump;
-    node["JumpForce"] << component.jump_force;
-
-    node["Friction"] << component.friction;
-    node["CollisionTolerance"] << component.collision_tolerance;
+    entities->push_back(toml::table{{"mesh_collider_component", table}});
   }
 
-  if (entity.has_component<LuaScriptComponent>()) {
-    auto node = entity_node["LuaScriptComponent"];
-    node |= ryml::MAP;
+  if (scene->registry.all_of<CharacterControllerComponent>(entity)) {
+    const auto& component = scene->registry.get<CharacterControllerComponent>(entity);
+    const auto table = toml::table{
+      TBL_FIELD(component, character_height_standing),
+      TBL_FIELD(component, character_radius_standing),
+      TBL_FIELD(component, character_radius_crouching),
+      TBL_FIELD(component, character_height_crouching),
+      TBL_FIELD(component, control_movement_during_jump),
+      TBL_FIELD(component, jump_force),
+      TBL_FIELD(component, friction),
+      TBL_FIELD(component, collision_tolerance),
+    };
 
-    const auto& component = entity.get_component<LuaScriptComponent>();
-    const auto& system = component.lua_system;
-
-    node["Path"] << system->get_path();
+    entities->push_back(toml::table{{"character_controller_component", table}});
   }
 
-  if (entity.has_component<CustomComponent>()) {
-    auto node = entity_node["CustomComponent"];
-    node |= ryml::MAP;
+  if (scene->registry.all_of<LuaScriptComponent>(entity)) {
+    const auto& component = scene->registry.get<LuaScriptComponent>(entity);
+    const auto& systems = component.lua_systems;
 
-    const auto& component = entity.get_component<CustomComponent>();
+    toml::array path_array = {};
+    for (const auto& system : systems)
+      path_array.push_back(system->get_path());
 
-    node["Name"] << component.name;
-    auto fields_node = node["Fields"];
-    fields_node |= ryml::MAP;
-    for (const auto& field : component.fields) {
-      auto field_node = fields_node[field.name.c_str()];
-      field_node |= ryml::MAP;
-      field_node["Type"] << (int)field.type;
-      field_node["Value"] << field.value;
+    const auto table = toml::table{{"paths", path_array}};
+
+    entities->push_back(toml::table{{"lua_script_component", table}});
+  }
+
+  if (scene->registry.all_of<CPPScriptComponent>(entity)) {
+    const auto& component = scene->registry.get<CPPScriptComponent>(entity);
+    toml::array hash_array = {};
+    for (const auto& system : component.systems) {
+      hash_array.push_back(std::to_string(system->hash_code));
     }
+    const auto table = toml::table{{"system_hashes", hash_array}};
+    entities->push_back(toml::table{{"cpp_script_component", table}});
+  }
+
+  if (scene->registry.all_of<SpriteComponent>(entity)) {
+    const auto& component = scene->registry.get<SpriteComponent>(entity);
+    const auto path = component.material->get_albedo_texture() ? component.material->get_albedo_texture()->get_path() : "";
+    const auto table = toml::table{
+      TBL_FIELD(component, layer),
+      TBL_FIELD(component, sort_y),
+      {"color", get_toml_array(component.material->parameters.color)},
+      {"uv_size", get_toml_array(component.material->parameters.uv_size)},
+      {"uv_offset", get_toml_array(component.material->parameters.uv_offset)},
+      {"texture_path", path},
+    };
+    entities->push_back(toml::table{{"sprite_component", table}});
+  }
+
+  if (scene->registry.all_of<SpriteAnimationComponent>(entity)) {
+    const auto& component = scene->registry.get<SpriteAnimationComponent>(entity);
+    const auto table = toml::table{
+      TBL_FIELD(component, num_frames),
+      TBL_FIELD(component, loop),
+      TBL_FIELD(component, inverted),
+      TBL_FIELD(component, fps),
+      TBL_FIELD(component, columns),
+      {"frame_size", get_toml_array(component.frame_size)},
+    };
+    entities->push_back(toml::table{{"sprite_animation_component", table}});
+  }
+
+  if (scene->registry.all_of<TilemapComponent>(entity)) {
+    const auto& component = scene->registry.get<TilemapComponent>(entity);
+    const auto table = toml::table{
+      {"path", component.path},
+    };
+    entities->push_back(toml::table{{"tilemap_component", table}});
   }
 }
 
-UUID EntitySerializer::deserialize_entity(ryml::ConstNodeRef entity_node, Scene* scene, bool preserve_uuid) {
-  const auto st = std::string(entity_node["Entity"].val().data());
-  const uint64_t uuid = std::stoull(st.substr(0, st.find('\n')));
+void EntitySerializer::serialize_entity_binary(Archive& archive, Scene* scene, Entity entity) {
+  if (scene->registry.all_of<IDComponent>(entity)) {
+    const auto& component = scene->registry.get<IDComponent>(entity);
+    archive << component.uuid;
+  }
+  if (scene->registry.all_of<TagComponent>(entity)) {
+    const auto& component = scene->registry.get<TagComponent>(entity);
+    archive << component.tag;
+  }
+}
 
-  std::string name;
-  if (entity_node.has_child("TagComponent"))
-    entity_node["TagComponent"]["Tag"] >> name;
+UUID EntitySerializer::deserialize_entity(toml::array* entity_arr, Scene* scene, bool preserve_uuid) {
+  // these values are always present
+  const uint64_t uuid = std::stoull(entity_arr->get(0)->as_table()->get("uuid")->as_string()->get());
+  const auto tag_node = entity_arr->get(1)->as_table()->get("tag_component")->as_table();
+  std::string name = tag_node->get("tag")->as_string()->get();
 
-  Entity deserialized_entity;
+  entt::entity deserialized_entity = {};
   if (preserve_uuid)
     deserialized_entity = scene->create_entity_with_uuid(uuid, name);
   else
     deserialized_entity = scene->create_entity(name);
 
-  if (entity_node.has_child("TransformComponent")) {
-    auto& tc = deserialized_entity.get_component<TransformComponent>();
-    const auto& node = entity_node["TransformComponent"];
+  auto& reg = scene->registry;
 
-    glm::read(node["Translation"], &tc.position);
-    glm::read(node["Rotation"], &tc.rotation);
-    glm::read(node["Scale"], &tc.scale);
-  }
+  auto& tag_component = reg.get_or_emplace<TagComponent>(deserialized_entity);
+  tag_component.tag = name;
+  tag_component.enabled = tag_node->get("enabled")->as_boolean()->get();
 
-  if (entity_node.has_child("RelationshipComponent")) {
-    auto& rc = deserialized_entity.get_component<RelationshipComponent>();
-    const auto node = entity_node["RelationshipComponent"];
-    uint64_t parent_id = 0;
-    node["Parent"] >> parent_id;
-    rc.parent = parent_id;
-
-    size_t child_count = 0;
-    node["ChildCount"] >> child_count;
-    rc.children.clear();
-    rc.children.reserve(child_count);
-    const auto children = node["Children"];
-
-    if (children.num_children() == child_count) {
-      for (size_t i = 0; i < child_count; i++) {
-        uint64_t child_id = 0;
-        children[i] >> child_id;
-        UUID child = child_id;
-        if (child)
-          rc.children.push_back(child);
+  for (auto& ent : *entity_arr) {
+    if (const auto relation_node = ent.as_table()->get("relationship_component")) {
+      auto& rc = reg.get_or_emplace<RelationshipComponent>(deserialized_entity);
+      rc.parent = std::stoull(GET_STRING2(relation_node, "parent"));
+      const auto children_node = relation_node->as_table()->get("children")->as_array();
+      for (auto& child : *children_node)
+        rc.children.emplace_back(std::stoull(child.as_string()->get()));
+    } else if (const auto transform_node = ent.as_table()->get("transform_component")) {
+      auto& tc = reg.get_or_emplace<TransformComponent>(deserialized_entity);
+      tc.position = get_vec3_toml_array(GET_ARRAY(transform_node, "position"));
+      tc.rotation = get_vec3_toml_array(GET_ARRAY(transform_node, "rotation"));
+      tc.scale = get_vec3_toml_array(GET_ARRAY(transform_node, "scale"));
+    } else if (const auto mesh_node = ent.as_table()->get("mesh_component")) {
+      const auto path = GET_STRING2(mesh_node, "mesh_path");
+      auto mesh = AssetManager::get_mesh_asset(path);
+      auto& mc = reg.emplace<MeshComponent>(deserialized_entity, mesh);
+      GET_BOOL(mesh_node, mc, cast_shadows);
+      GET_BOOL(mesh_node, mc, stationary);
+    } else if (const auto light_node = ent.as_table()->get("light_component")) {
+      auto& lc = reg.emplace<LightComponent>(deserialized_entity);
+      lc.type = (LightComponent::LightType)GET_UINT322(light_node, "type");
+      GET_BOOL(light_node, lc, color_temperature_mode);
+      GET_UINT32(light_node, lc, temperature);
+      lc.color = get_vec3_toml_array(GET_ARRAY(light_node, "color"));
+      GET_FLOAT(light_node, lc, intensity);
+      GET_FLOAT(light_node, lc, range);
+      GET_FLOAT(light_node, lc, radius);
+      GET_FLOAT(light_node, lc, length);
+      GET_FLOAT(light_node, lc, outer_cone_angle);
+      GET_FLOAT(light_node, lc, inner_cone_angle);
+      GET_BOOL(light_node, lc, cast_shadows);
+      GET_UINT32(light_node, lc, shadow_map_res);
+    } else if (const auto pp_node = ent.as_table()->get("post_process_probe")) {
+      auto& pp = reg.emplace<PostProcessProbe>(deserialized_entity);
+      GET_BOOL(pp_node, pp, vignette_enabled);
+      GET_FLOAT(pp_node, pp, vignette_intensity);
+      GET_BOOL(pp_node, pp, film_grain_enabled);
+      GET_FLOAT(pp_node, pp, film_grain_intensity);
+      GET_BOOL(pp_node, pp, chromatic_aberration_enabled);
+      GET_FLOAT(pp_node, pp, chromatic_aberration_intensity);
+      GET_BOOL(pp_node, pp, sharpen_enabled);
+      GET_FLOAT(pp_node, pp, sharpen_intensity);
+    } else if (const auto camera_node = ent.as_table()->get("camera_component")) {
+      auto& cc = reg.emplace<CameraComponent>(deserialized_entity);
+      cc.camera->set_projection((Camera::Projection)GET_UINT322(camera_node, "projection"));
+      cc.camera->set_fov(GET_FLOAT2(camera_node, "fov"));
+      cc.camera->set_near(GET_FLOAT2(camera_node, "near"));
+      cc.camera->set_far(GET_FLOAT2(camera_node, "far"));
+      cc.camera->set_zoom(GET_FLOAT2(camera_node, "zoom"));
+    } else if (const auto rb_node = ent.as_table()->get("rigidbody_component")) {
+      auto& rb = reg.emplace<RigidbodyComponent>(deserialized_entity);
+      rb.allowed_dofs = (RigidbodyComponent::AllowedDOFs)GET_UINT322(rb_node, "allowed_dofs");
+      rb.type = (RigidbodyComponent::BodyType)GET_UINT322(rb_node, "type");
+      GET_FLOAT(rb_node, rb, mass);
+      GET_FLOAT(rb_node, rb, linear_drag);
+      GET_FLOAT(rb_node, rb, angular_drag);
+      GET_FLOAT(rb_node, rb, gravity_scale);
+      GET_BOOL(rb_node, rb, allow_sleep);
+      GET_BOOL(rb_node, rb, awake);
+      GET_BOOL(rb_node, rb, continuous);
+      GET_BOOL(rb_node, rb, interpolation);
+      GET_BOOL(rb_node, rb, is_sensor);
+    } else if (const auto bc_node = ent.as_table()->get("box_collider_component")) {
+      auto& bc = reg.emplace<BoxColliderComponent>(deserialized_entity);
+      bc.size = get_vec3_toml_array(GET_ARRAY(bc_node, "size"));
+      bc.offset = get_vec3_toml_array(GET_ARRAY(bc_node, "offset"));
+      GET_FLOAT(bc_node, bc, density);
+      GET_FLOAT(bc_node, bc, friction);
+      GET_FLOAT(bc_node, bc, restitution);
+    } else if (const auto sc_node = ent.as_table()->get("sphere_collider_component")) {
+      auto& sc = reg.emplace<SphereColliderComponent>(deserialized_entity);
+      GET_FLOAT(sc_node, sc, radius);
+      sc.offset = get_vec3_toml_array(GET_ARRAY(sc_node, "offset"));
+      GET_FLOAT(sc_node, sc, density);
+      GET_FLOAT(sc_node, sc, friction);
+      GET_FLOAT(sc_node, sc, restitution);
+    } else if (const auto cc_node = ent.as_table()->get("capsule_collider_component")) {
+      auto& cc = reg.emplace<CapsuleColliderComponent>(deserialized_entity);
+      GET_FLOAT(cc_node, cc, height);
+      GET_FLOAT(cc_node, cc, radius);
+      cc.offset = get_vec3_toml_array(GET_ARRAY(cc_node, "offset"));
+      GET_FLOAT(cc_node, cc, density);
+      GET_FLOAT(cc_node, cc, friction);
+      GET_FLOAT(cc_node, cc, restitution);
+    } else if (const auto tcc_node = ent.as_table()->get("tapered_capsule_collider_component")) {
+      auto& tcc = reg.emplace<TaperedCapsuleColliderComponent>(deserialized_entity);
+      GET_FLOAT(tcc_node, tcc, height);
+      GET_FLOAT(tcc_node, tcc, top_radius);
+      GET_FLOAT(tcc_node, tcc, bottom_radius);
+      tcc.offset = get_vec3_toml_array(GET_ARRAY(tcc_node, "offset"));
+      GET_FLOAT(tcc_node, tcc, density);
+      GET_FLOAT(tcc_node, tcc, friction);
+      GET_FLOAT(tcc_node, tcc, restitution);
+    } else if (const auto ccc_node = ent.as_table()->get("cylinder_collider_component")) {
+      auto& ccc = reg.emplace<CylinderColliderComponent>(deserialized_entity);
+      GET_FLOAT(ccc_node, ccc, height);
+      GET_FLOAT(ccc_node, ccc, radius);
+      ccc.offset = get_vec3_toml_array(GET_ARRAY(ccc_node, "offset"));
+      GET_FLOAT(ccc_node, ccc, density);
+      GET_FLOAT(ccc_node, ccc, friction);
+      GET_FLOAT(ccc_node, ccc, restitution);
+    } else if (const auto mc_node = ent.as_table()->get("mesh_collider_component")) {
+      auto& mc = reg.emplace<MeshColliderComponent>(deserialized_entity);
+      mc.offset = get_vec3_toml_array(GET_ARRAY(mc_node, "offset"));
+      GET_FLOAT(mc_node, mc, friction);
+      GET_FLOAT(mc_node, mc, restitution);
+    } else if (const auto chc_node = ent.as_table()->get("character_controller_component")) {
+      auto& chc = reg.emplace<CharacterControllerComponent>(deserialized_entity);
+      GET_FLOAT(chc_node, chc, character_height_standing);
+      GET_FLOAT(chc_node, chc, character_radius_standing);
+      GET_FLOAT(chc_node, chc, character_height_crouching);
+      GET_FLOAT(chc_node, chc, character_radius_crouching);
+      GET_BOOL(chc_node, chc, control_movement_during_jump);
+      GET_FLOAT(chc_node, chc, jump_force);
+      GET_FLOAT(chc_node, chc, friction);
+      GET_FLOAT(chc_node, chc, collision_tolerance);
+    } else if (const auto lua_node = ent.as_table()->get("lua_script_component")) {
+      auto& lsc = reg.emplace<LuaScriptComponent>(deserialized_entity);
+      auto paths = GET_ARRAY(lua_node, "paths");
+      for (auto& path : *paths) {
+        auto ab = App::get_system<VFS>()->resolve_physical_dir(path.as_string()->get());
+        lsc.lua_systems.emplace_back(create_shared<LuaSystem>(ab));
       }
+    } else if (const auto cpp_node = ent.as_table()->get("cpp_script_component")) {
+      auto& csc = reg.emplace<CPPScriptComponent>(deserialized_entity);
+      auto system_hashes = GET_ARRAY(cpp_node, "system_hashes");
+      for (auto& hash : *system_hashes) {
+        auto* system_manager = App::get_system<SystemManager>();
+        csc.systems.emplace_back(system_manager->get_system(std::stoull(hash.as_string()->get())));
+      }
+    } else if (const auto sprite_node = ent.as_table()->get("sprite_component")) {
+      auto& sc = reg.emplace<SpriteComponent>(deserialized_entity);
+      GET_UINT32(sprite_node, sc, layer);
+      GET_BOOL(sprite_node, sc, sort_y);
+      sc.material = create_shared<SpriteMaterial>();
+      sc.material->parameters.color = get_vec4_toml_array(GET_ARRAY(sprite_node, "color"));
+      sc.material->parameters.uv_offset = get_vec2_toml_array(GET_ARRAY(sprite_node, "uv_offset"));
+      sc.material->parameters.uv_size = get_vec2_toml_array(GET_ARRAY(sprite_node, "uv_size"));
+
+      const auto path = GET_STRING2(sprite_node, "texture_path");
+      if (!path.empty())
+        sc.material->set_albedo_texture(AssetManager::get_texture_asset({.path = path}));
+    } else if (const auto sprite_anim_node = ent.as_table()->get("sprite_animation_component")) {
+      auto& sac = reg.emplace<SpriteAnimationComponent>(deserialized_entity);
+      GET_UINT32(sprite_anim_node, sac, num_frames);
+      GET_BOOL(sprite_anim_node, sac, loop);
+      GET_BOOL(sprite_anim_node, sac, inverted);
+      GET_UINT32(sprite_anim_node, sac, fps);
+      GET_UINT32(sprite_anim_node, sac, columns);
+      sac.frame_size = get_vec2_toml_array(GET_ARRAY(sprite_anim_node, "frame_size"));
+    } else if (const auto tilemap_node = ent.as_table()->get("tilemap_component")) {
+      auto& tmc = reg.emplace<TilemapComponent>(deserialized_entity);
+      const auto path = App::get_system<VFS>()->resolve_physical_dir(GET_STRING2(tilemap_node, "path"));
+      tmc.load(path);
     }
   }
-
-  if (entity_node.has_child("MeshComponent")) {
-    const auto& node = entity_node["MeshComponent"];
-
-    std::string mesh_path;
-    node["Mesh"] >> mesh_path;
-    bool base_node = false;
-    node["BaseNode"] >> base_node;
-    uint32_t node_index = 0;
-    node["NodeIndex"] >> node_index;
-
-    auto component = deserialized_entity.add_component_internal<MeshComponent>(AssetManager::get_mesh_asset(mesh_path));
-    component.base_node = base_node;
-    component.node_index = node_index;
-  }
-
-  if (entity_node.has_child("MaterialComponent")) {
-    auto& mc = deserialized_entity.get_or_add_component<MaterialComponent>();
-
-    const auto& node = entity_node["MaterialComponent"];
-
-    std::string asset_path;
-    if (node.has_child("Path"))
-      node["Path"] >> asset_path;
-
-    if (!asset_path.empty()) {
-      mc.materials.clear();
-      auto mat = mc.materials.emplace_back(create_ref<Material>());
-      mat->create();
-      MaterialSerializer serializer(mat);
-      serializer.deserialize(asset_path);
-      mc.using_material_asset = true;
-    }
-  }
-
-  if (entity_node.has_child("LightComponent")) {
-    auto& light = deserialized_entity.add_component_internal<LightComponent>();
-    const auto& node = entity_node["LightComponent"];
-
-    set_enum(node["Type"], light.type);
-    node["UseColorTemperatureMode"] >> light.use_color_temperature_mode;
-    node["Temperature"] >> light.temperature;
-    node["Intensity"] >> light.intensity;
-    glm::read(node["Color"], &light.color);
-    node["Range"] >> light.range;
-    node["CutOffAngle"] >> light.cut_off_angle;
-    node["OuterCutOffAngle"] >> light.outer_cut_off_angle;
-    set_enum(node["ShadowQuality"], light.shadow_quality);
-  }
-
-  if (entity_node.has_child("SkyLightComponent")) {
-    auto& light = deserialized_entity.add_component_internal<SkyLightComponent>();
-    const auto& node = entity_node["SkyLightComponent"];
-
-    std::string path{};
-    node["ImagePath"] >> path;
-    if (!path.empty()) {
-      light.cubemap = AssetManager::get_texture_asset({.path = path});
-      scene->get_renderer()->dispatcher.trigger(SkyboxLoadEvent{light.cubemap});
-    }
-  }
-
-  if (entity_node.has_child("PostProcessProbe")) {
-    auto& probe = deserialized_entity.add_component_internal<PostProcessProbe>();
-    const auto& node = entity_node["PostProcessProbe"];
-
-    node["VignetteEnabled"] >> probe.vignette_enabled;
-    node["VignetteIntensity"] >> probe.vignette_intensity;
-
-    node["FilmGrainEnabled"] >> probe.film_grain_enabled;
-    node["FilmGrainIntensity"] >> probe.film_grain_intensity;
-
-    node["ChromaticAberrationEnabled"] >> probe.chromatic_aberration_enabled;
-    node["ChromaticAberrationIntensity"] >> probe.chromatic_aberration_intensity;
-
-    node["SharpenEnabled"] >> probe.sharpen_enabled;
-    node["SharpenIntensity"] >> probe.sharpen_intensity;
-  }
-
-  if (entity_node.has_child("CameraComponent")) {
-    auto& camera = deserialized_entity.add_component_internal<CameraComponent>();
-    const auto& node = entity_node["CameraComponent"];
-
-    float fov = 0;
-    float nearclip = 0;
-    float farclip = 0;
-    node["FOV"] >> fov;
-    node["NearClip"] >> nearclip;
-    node["FarClip"] >> farclip;
-
-    camera.system->set_fov(fov);
-    camera.system->set_near(nearclip);
-    camera.system->set_far(farclip);
-  }
-
-  if (entity_node.has_child("RigidbodyComponent")) {
-    auto& rb = deserialized_entity.add_component_internal<RigidbodyComponent>();
-    const auto node = entity_node["RigidbodyComponent"];
-
-    set_enum(node["Type"], rb.type);
-    node["Mass"] >> rb.mass;
-    node["LinearDrag"] >> rb.linear_drag;
-    node["AngularDrag"] >> rb.angular_drag;
-    node["GravityScale"] >> rb.gravity_scale;
-    node["AllowSleep"] >> rb.allow_sleep;
-    node["Awake"] >> rb.awake;
-    node["Continuous"] >> rb.continuous;
-    node["Interpolation"] >> rb.interpolation;
-    node["IsSensor"] >> rb.is_sensor;
-  }
-
-  if (entity_node.has_child("BoxColliderComponent")) {
-    const auto node = entity_node["BoxColliderComponent"];
-    auto& bc = deserialized_entity.add_component_internal<BoxColliderComponent>();
-
-    node["Size"] >> bc.size;
-    glm::read(node["Offset"], &bc.offset);
-    node["Density"] >> bc.density;
-    node["Friction"] >> bc.friction;
-    node["Restitution"] >> bc.restitution;
-  }
-
-  if (entity_node.has_child("SphereColliderComponent")) {
-    auto node = entity_node["SphereColliderComponent"];
-
-    auto& sc = deserialized_entity.add_component_internal<SphereColliderComponent>();
-    node["Radius"] >> sc.radius;
-    glm::read(node["Offset"], &sc.offset);
-    node["Offset"] >> sc.offset;
-    node["Density"] >> sc.density;
-    node["Friction"] >> sc.friction;
-    node["Restitution"] >> sc.restitution;
-  }
-
-  if (entity_node.has_child("CapsuleColliderComponent")) {
-    auto node = entity_node["CapsuleColliderComponent"];
-
-    auto& cc = deserialized_entity.add_component_internal<CapsuleColliderComponent>();
-    node["Height"] >> cc.height;
-    node["Radius"] >> cc.radius;
-    glm::read(node["Offset"], &cc.offset);
-    node["Density"] >> cc.density;
-    node["Friction"] >> cc.friction;
-    node["Restitution"] >> cc.restitution;
-  }
-
-  if (entity_node.has_child("TaperedCapsuleColliderComponent")) {
-    const auto node = entity_node["TaperedCapsuleColliderComponent"];
-
-    auto& tcc = deserialized_entity.add_component_internal<TaperedCapsuleColliderComponent>();
-    node["Height"] >> tcc.height;
-    node["TopRadius"] >> tcc.top_radius;
-    node["BottomRadius"] >> tcc.bottom_radius;
-    glm::read(node["Offset"], &tcc.offset);
-    node["Density"] >> tcc.density;
-    node["Friction"] >> tcc.friction;
-    node["Restitution"] >> tcc.restitution;
-  }
-
-  if (entity_node.has_child("CylinderColliderComponent")) {
-    auto node = entity_node["CylinderColliderComponent"];
-
-    auto& cc = deserialized_entity.add_component_internal<CapsuleColliderComponent>();
-    node["Height"] >> cc.height;
-    node["Radius"] >> cc.radius;
-    glm::read(node["Offset"], &cc.offset);
-    node["Density"] >> cc.density;
-    node["Friction"] >> cc.friction;
-    node["Restitution"] >> cc.restitution;
-  }
-
-  if (entity_node.has_child("CharacterControllerComponent")) {
-    auto& component = deserialized_entity.add_component_internal<CharacterControllerComponent>();
-    const auto& node = entity_node["CharacterControllerComponent"];
-
-    // Size
-    node["CharacterHeightStanding"] >> component.character_height_standing;
-    node["CharacterRadiusStanding"] >> component.character_radius_standing;
-    node["CharacterRadiusCrouching"] >> component.character_radius_crouching;
-    node["CharacterHeightCrouching"] >> component.character_height_crouching;
-
-    // Movement
-    node["ControlMovementDuringJump"] >> component.control_movement_during_jump;
-    node["JumpForce"] >> component.jump_force;
-
-    node["Friction"] >> component.friction;
-    node["CollisionTolerance"] >> component.collision_tolerance;
-  }
-
-  if (entity_node.has_child("LuaScriptComponent")) {
-    auto& component = deserialized_entity.add_component_internal<LuaScriptComponent>();
-    const auto& node = entity_node["LuaScriptComponent"];
-
-    // Size
-    std::string path = {};
-    node["Path"] >> path;
-
-    if (!path.empty()) {
-      component.lua_system = create_ref<LuaSystem>(path);
-    }
-  }
-
-  if (entity_node.has_child("CustomComponent")) {
-    auto& component = deserialized_entity.add_component_internal<CustomComponent>();
-    const auto& node = entity_node["CustomComponent"];
-
-    node["Name"] >> component.name;
-    auto fields_node = node["Fields"];
-    for (size_t i = 0; i < fields_node.num_children(); i++) {
-      CustomComponent::ComponentField field;
-      auto key = std::string(fields_node[i].get()->m_key.scalar.data());
-      field.name = key.substr(0, key.find(':'));
-      set_enum(fields_node[i]["Type"], field.type);
-      fields_node[i]["Value"] >> field.value;
-      component.fields.emplace_back(field);
-    }
-  }
-
-  return deserialized_entity.get_uuid();
+  return eutil::get_uuid(reg, deserialized_entity);
 }
 
 void EntitySerializer::serialize_entity_as_prefab(const char* filepath, Entity entity) {
-  if (entity.has_component<PrefabComponent>()) {
+#if 0 // TODO:
+  if (scene->registry.all_of<PrefabComponent>(entity)) {
     OX_CORE_ERROR("Entity already has a prefab component!");
     return;
   }
@@ -553,20 +534,14 @@ void EntitySerializer::serialize_entity_as_prefab(const char* filepath, Entity e
   ss << tree;
   std::ofstream filestream(filepath);
   filestream << ss.str();
+#endif
 }
 
 Entity EntitySerializer::deserialize_entity_as_prefab(const char* filepath, Scene* scene) {
-  auto content = FileUtils::read_file(filepath);
+#if 0 // TODO:
+  auto content = FileSystem::read_file(filepath);
   if (content.empty()) {
     OX_CORE_ERROR("Couldn't read prefab file: {0}", filepath);
-
-    // Try to read it again from assets path
-    content = FileUtils::read_file(AssetManager::get_asset_file_system_path(filepath).string());
-    if (!content.empty())
-      OX_CORE_INFO("Could load the prefab file from assets path: {0}", filepath);
-    else {
-      return {};
-    }
   }
 
   const ryml::Tree tree = ryml::parse_in_arena(ryml::to_csubstr(content));
@@ -621,7 +596,8 @@ Entity EntitySerializer::deserialize_entity_as_prefab(const char* filepath, Scen
     return root_entity;
   }
 
-  OX_CORE_ERROR("There are not entities in the prefab to deserialize! {0}", FileSystem::get_file_name(filepath));
+#endif
+  OX_LOG_ERROR("There are not entities in the prefab to deserialize! {0}", fs::get_file_name(filepath));
   return {};
 }
-}
+} // namespace ox

@@ -22,11 +22,20 @@ if (ENABLE_ASAN)
     add_link_options(-fsanitize=address)
 endif()
 
-
 # fix for dxc
 if (UNIX)
     add_compile_options(-fms-extensions)
 endif(UNIX)
+
+# compile commands
+if (NOT MSVC)
+	set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+endif ()
+
+# GIT_SUBMODULE "" policy
+cmake_policy(SET CMP0097 NEW)
+
+set(CMAKE_WARN_DEPRECATED OFF CACHE BOOL "")
 
 # Sub-projects
 add_subdirectory(Oxylus)

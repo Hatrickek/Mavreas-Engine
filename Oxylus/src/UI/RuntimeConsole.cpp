@@ -1,193 +1,193 @@
-﻿#include "RuntimeConsole.h"
+﻿#include "RuntimeConsole.hpp"
 
 #include <icons/IconsMaterialDesignIcons.h>
+#include <misc/cpp/imgui_stdlib.h>
 
-#include "Core/Application.h"
+#include "ImGuiLayer.hpp"
 
-#include "Utils/CVars.h"
-#include "Utils/StringUtils.h"
+#include "Core/App.hpp"
 
-namespace Oxylus {
-static ImVec4 get_color(const fmtlog::LogLevel level) {
-  switch (level) {
-    case fmtlog::LogLevel::INF: return {0, 1, 0, 1};
-    case fmtlog::LogLevel::WRN: return {0.9f, 0.6f, 0.2f, 1};
-    case fmtlog::LogLevel::ERR: return {1, 0, 0, 1};
-    case fmtlog::LogLevel::DBG: return {1, 1, 1, 1};
-    default: return {1, 1, 1, 1};
+#include "Utils/CVars.hpp"
+#include "Utils/StringUtils.hpp"
+
+namespace ox {
+static ImVec4 get_color(const loguru::Verbosity verb) {
+  switch (verb) {
+    case loguru::Verbosity_INFO   : return {0, 1, 0, 1};
+    case loguru::Verbosity_WARNING: return {0.9f, 0.6f, 0.2f, 1};
+    case loguru::Verbosity_ERROR  : return {1, 0, 0, 1};
+    default                       : return {1, 1, 1, 1};
   }
 }
 
-static const char8_t* get_level_icon(fmtlog::LogLevel level) {
+static const char8_t* get_level_icon(const loguru::Verbosity level) {
   switch (level) {
-    case fmtlog::LogLevel::DBG: return ICON_MDI_MESSAGE_TEXT;
-    case fmtlog::LogLevel::INF: return ICON_MDI_INFORMATION;
-    case fmtlog::LogLevel::WRN: return ICON_MDI_ALERT;
-    case fmtlog::LogLevel::ERR: return ICON_MDI_CLOSE_OCTAGON;
-    default: ;
+    case loguru::Verbosity_INFO   : return ICON_MDI_INFORMATION;
+    case loguru::Verbosity_WARNING: return ICON_MDI_ALERT;
+    case loguru::Verbosity_ERROR  : return ICON_MDI_CLOSE_OCTAGON;
+    default                       :;
   }
 
   return u8"Unknown name";
 }
 
-void RuntimeConsoleLogSink::log(int64_t ns,
-                                const fmtlog::LogLevel level,
-                                fmt::string_view location,
-                                size_t base_pos,
-                                fmt::string_view thread_name,
-                                const fmt::string_view msg,
-                                size_t body_pos,
-                                size_t log_file_pos) {
-  const auto console = reinterpret_cast<RuntimeConsole*>(user_data);
-  console->add_log(msg.data(), level);
-}
-
 RuntimeConsole::RuntimeConsole() {
-  Log::register_sink<RuntimeConsoleLogSink>(this);
+  Log::add_callback("runtime_console", [](void* user_data, const loguru::Message& message) {
+    const auto console = reinterpret_cast<RuntimeConsole*>(user_data);
+    console->add_log(message.message, message.verbosity);
+  }, this, loguru::Verbosity_INFO);
 
   // Default commands
-  register_command("quit", "", [] { Application::get()->close(); });
+  register_command("quit", "", [] { App::get()->close(); });
   register_command("clear", "", [this] { clear_log(); });
   register_command("help", "", [this] { help_command(); });
 
-  m_request_scroll_to_bottom = true;
+  request_scroll_to_bottom = true;
 }
 
-void RuntimeConsole::register_command(const std::string& command,
-                                      const std::string& on_succes_log,
-                                      const std::function<void()>& action) {
-  m_command_map.emplace(command, ConsoleCommand{nullptr, nullptr, nullptr, action, on_succes_log});
+RuntimeConsole::~RuntimeConsole() { Log::remove_callback("runtime_console"); }
+
+void RuntimeConsole::register_command(const std::string& command, const std::string& on_succes_log, const std::function<void()>& action) {
+  command_map.emplace(command, ConsoleCommand{nullptr, nullptr, nullptr, action, on_succes_log});
 }
 
 void RuntimeConsole::register_command(const std::string& command, const std::string& on_succes_log, int32_t* value) {
-  m_command_map.emplace(command, ConsoleCommand{value, nullptr, nullptr, nullptr, on_succes_log});
+  command_map.emplace(command, ConsoleCommand{value, nullptr, nullptr, nullptr, on_succes_log});
 }
 
 void RuntimeConsole::register_command(const std::string& command, const std::string& on_succes_log, std::string* value) {
-  m_command_map.emplace(command, ConsoleCommand{nullptr, value, nullptr, nullptr, on_succes_log});
+  command_map.emplace(command, ConsoleCommand{nullptr, value, nullptr, nullptr, on_succes_log});
 }
 
 void RuntimeConsole::register_command(const std::string& command, const std::string& on_succes_log, bool* value) {
-  m_command_map.emplace(command, ConsoleCommand{nullptr, nullptr, value, nullptr, on_succes_log});
+  command_map.emplace(command, ConsoleCommand{nullptr, nullptr, value, nullptr, on_succes_log});
 }
 
-void RuntimeConsole::add_log(const char* fmt, fmtlog::LogLevel level) {
-  std::unique_lock lock(log_mutex);
-  if ((uint32_t)m_text_buffer.size() >= MAX_TEXT_BUFFER_SIZE)
-    m_text_buffer.erase(m_text_buffer.begin());
-  m_text_buffer.emplace_back(fmt, level);
-  m_request_scroll_to_bottom = true;
+void RuntimeConsole::add_log(const char* fmt, loguru::Verbosity verb) {
+  if ((uint32_t)text_buffer.size() >= MAX_TEXT_BUFFER_SIZE)
+    text_buffer.erase(text_buffer.begin());
+  text_buffer.emplace_back(fmt, verb);
+  request_scroll_to_bottom = true;
 }
 
-void RuntimeConsole::clear_log() {
-  m_text_buffer.clear();
-}
+void RuntimeConsole::clear_log() { text_buffer.clear(); }
 
-void RuntimeConsole::on_imgui_render(ImGuiWindowFlags window_flags) {
-  if (!visible)
-    return;
-  id = fmt::format(" {} {}\t\t###", StringUtils::from_char8_t(ICON_MDI_CONSOLE), panel_name);
-  if (ImGui::Begin(id.c_str(), &visible, window_flags)) {
-    if (render_menu_bar) {
+void RuntimeConsole::on_imgui_render() {
+  if (ImGui::IsKeyPressed(ImGuiKey_GraveAccent, false)) {
+    visible = !visible;
+    request_keyboard_focus = true;
+  }
+  if (visible) {
+    constexpr auto animation_duration = 0.5f;
+    constexpr auto animation_speed = 3.0f;
+
+    animation_counter += (float)App::get_timestep().get_seconds() * animation_speed;
+    animation_counter = std::clamp(animation_counter, 0.0f, animation_duration);
+
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->WorkPos, ImGuiCond_Always);
+    ImVec2 size = {ImGui::GetMainViewport()->WorkSize.x, ImGui::GetMainViewport()->WorkSize.y * animation_counter};
+    ImGui::SetNextWindowSize(size, ImGuiCond_Always);
+
+    constexpr ImGuiWindowFlags windowFlags = ImGuiWindowFlags_NoNavInputs | ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_MenuBar |
+                                             ImGuiWindowFlags_NoCollapse;
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+    // ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.000f, 0.000f, 0.000f, 1.000f));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.000f, 0.000f, 0.000f, 0.784f));
+    // ImGui::PushStyleColor(ImGuiCol_MenuBarBg, ImVec4(0.100f, 0.100f, 0.100f, 1.000f));
+
+    id = fmt::format(" {} {}\t\t###", StringUtils::from_char8_t(ICON_MDI_CONSOLE), panel_name);
+    if (ImGui::Begin(id.c_str(), nullptr, windowFlags)) {
       if (ImGui::BeginMenuBar()) {
         if (ImGui::MenuItem(StringUtils::from_char8_t(ICON_MDI_TRASH_CAN))) {
           clear_log();
         }
+        if (ImGui::MenuItem(StringUtils::from_char8_t(ICON_MDI_INFORMATION), nullptr, text_filter == loguru::Verbosity_INFO)) {
+          text_filter = text_filter == loguru::Verbosity_INFO ? loguru::Verbosity_OFF : loguru::Verbosity_INFO;
+        }
+        if (ImGui::MenuItem(StringUtils::from_char8_t(ICON_MDI_ALERT), nullptr, text_filter == loguru::Verbosity_WARNING)) {
+          text_filter = text_filter == loguru::Verbosity_WARNING ? loguru::Verbosity_OFF : loguru::Verbosity_WARNING;
+        }
+        if (ImGui::MenuItem(StringUtils::from_char8_t(ICON_MDI_CLOSE_OCTAGON), nullptr, text_filter == loguru::Verbosity_ERROR)) {
+          text_filter = text_filter == loguru::Verbosity_ERROR ? loguru::Verbosity_OFF : loguru::Verbosity_ERROR;
+        }
+
         ImGui::EndMenuBar();
       }
+
       ImGui::Separator();
-    }
 
-    constexpr ImGuiTableFlags table_flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_ContextMenuInBody |
-                                            ImGuiTableFlags_ScrollY;
-
-    float width = 0;
-    if (ImGui::BeginChild("TextTable", ImVec2(0, -35))) {
-      ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, {1, 1});
-      if (ImGui::BeginTable("ScrollRegionTable", 1, table_flags)) {
+      float width = 0;
+      if (ImGui::BeginChild("TextTable", ImVec2(0, -35))) {
         width = ImGui::GetWindowSize().x;
         ImGui::PushFont(ImGuiLayer::bold_font);
-        for (uint32_t i = 0; i < (uint32_t)m_text_buffer.size(); i++) {
-          render_console_text(m_text_buffer[i].text, m_text_buffer[i].level);
+        for (int32_t i = 0; i < (int32_t)text_buffer.size(); i++) {
+          if (text_filter != loguru::Verbosity_OFF && text_filter != text_buffer[i].verbosity)
+            continue;
+          render_console_text(text_buffer[i].text, i, text_buffer[i].verbosity);
         }
 
         ImGui::PopFont();
-        if (m_request_scroll_to_bottom) {
-          ImGui::SetScrollY(ImGui::GetScrollMaxY() * 10);
-          m_request_scroll_to_bottom = false;
+        if (request_scroll_to_bottom || (auto_scroll && ImGui::GetScrollY() >= ImGui::GetScrollMaxY())) {
+          ImGui::SetScrollHereY(1.0f);
+          request_scroll_to_bottom = false;
         }
-        ImGui::EndTable();
       }
-      ImGui::PopStyleVar();
+      ImGui::EndChild();
+
+      ImGui::Separator();
+      ImGui::PushItemWidth(width);
+      constexpr ImGuiInputTextFlags input_flags = ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CallbackHistory |
+                                                  ImGuiInputTextFlags_CallbackCompletion | ImGuiInputTextFlags_EscapeClearsAll;
+      ImGui::PushFont(ImGuiLayer::bold_font);
+
+      auto callback = [](ImGuiInputTextCallbackData* data) {
+        const auto panel = (RuntimeConsole*)data->UserData;
+        return panel->input_text_callback(data);
+      };
+
+      if (request_keyboard_focus) {
+        ImGui::SetKeyboardFocusHere();
+        request_keyboard_focus = false;
+      }
+      std::string input_buf = {};
+      if (ImGui::InputText("##", &input_buf, input_flags, callback, this)) {
+        history_position = -1;
+        process_command(input_buf);
+        input_log.emplace_back(input_buf);
+        request_keyboard_focus = true;
+      }
+
+      ImGui::PopFont();
+      ImGui::PopItemWidth();
     }
-    ImGui::EndChild();
+    ImGui::End();
 
-    ImGui::Separator();
-    ImGui::PushItemWidth(width - 10);
-    constexpr ImGuiInputTextFlags input_flags = ImGuiInputTextFlags_EnterReturnsTrue |
-                                                ImGuiInputTextFlags_CallbackHistory |
-                                                ImGuiInputTextFlags_EscapeClearsAll;
-    static char s_input_buf[256];
-    ImGui::PushFont(ImGuiLayer::bold_font);
-    if (set_focus_to_keyboard_always)
-      ImGui::SetKeyboardFocusHere();
-
-    auto callback = [](ImGuiInputTextCallbackData* data) {
-      const auto panel = (RuntimeConsole*)data->UserData;
-      return panel->input_text_callback(data);
-    };
-
-    if (ImGui::InputText("##", s_input_buf,OX_ARRAYSIZE(s_input_buf), input_flags, callback, this)) {
-      process_command(s_input_buf);
-      m_input_log.emplace_back(s_input_buf);
-      memset(s_input_buf, 0, sizeof s_input_buf);
-    }
-
-    ImGui::PopFont();
-    ImGui::PopItemWidth();
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor(1);
+  } else {
+    animation_counter = 0.0f;
   }
-  ImGui::End();
 }
 
-void RuntimeConsole::render_console_text(std::string text, fmtlog::LogLevel level) {
-  ImGui::TableNextRow();
-  ImGui::TableNextColumn();
-
-  ImGuiTreeNodeFlags flags = 0;
-  flags |= ImGuiTreeNodeFlags_OpenOnArrow;
-  flags |= ImGuiTreeNodeFlags_SpanFullWidth;
-  flags |= ImGuiTreeNodeFlags_FramePadding;
-  flags |= ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen;
-
-  ImGui::PushID(text.c_str());
-  ImGui::PushStyleColor(ImGuiCol_Text, get_color(level));
-  const auto level_icon = get_level_icon(level);
-  ImGui::TreeNodeEx(text.c_str(), flags, "%s  %s", StringUtils::from_char8_t(level_icon), text.c_str());
+void RuntimeConsole::render_console_text(const std::string& text, const int32_t id, loguru::Verbosity verb) {
+  ImGui::PushStyleColor(ImGuiCol_Text, get_color(verb));
+  const auto level_icon = get_level_icon(verb);
+  ImGui::TextWrapped("%s %s", StringUtils::from_char8_t(level_icon), text.c_str());
   ImGui::PopStyleColor();
 
-  if (ImGui::BeginPopupContextItem("Popup")) {
+  const auto sid = fmt::format("{}", id);
+  if (ImGui::BeginPopupContextItem(sid.c_str(), ImGuiPopupFlags_MouseButtonRight)) {
     if (ImGui::MenuItem("Copy"))
       ImGui::SetClipboardText(text.c_str());
 
     ImGui::EndPopup();
   }
-  ImGui::PopID();
-}
-
-template <typename T>
-T get_current_cvar_value(uint32_t cvar_array_index) {
-  auto current_value = CVarSystem::get()->get_cvar_array<T>()->cvars[cvar_array_index].current;
-
-  return current_value;
 }
 
 template <typename T>
 void log_cvar_change(RuntimeConsole* console, const char* cvar_name, T current_value, bool changed) {
-  const std::string log_text = changed
-                                 ? fmt::format("Changed {} to {}", cvar_name, current_value)
-                                 : fmt::format("{} {}", cvar_name, current_value);
-  const fmtlog::LogLevel log_level = changed ? fmtlog::LogLevel::INF : fmtlog::LogLevel::DBG;
-  console->add_log(log_text.c_str(), log_level);
+  const std::string log_text = changed ? fmt::format("Changed {} to {}", cvar_name, current_value) : fmt::format("{} {}", cvar_name, current_value);
+  console->add_log(log_text.c_str(), loguru::Verbosity_INFO);
 }
 
 void RuntimeConsole::process_command(const std::string& command) {
@@ -196,17 +196,18 @@ void RuntimeConsole::process_command(const std::string& command) {
 
   bool is_cvar_variable = false;
 
-  const auto cvar = CVarSystem::get()->get_cvar(parsed_command.c_str());
+  auto* cvar_system = CVarSystem::get();
+  const auto cvar = cvar_system->get_cvar(entt::hashed_string(parsed_command.c_str()));
   if (cvar) {
     is_cvar_variable = true;
     switch (cvar->type) {
       case CVarType::INT: {
-        auto current_value = get_current_cvar_value<int32_t>(cvar->arrayIndex);
+        auto current_value = cvar_system->int_cvars.at(cvar->array_index).current;
         bool changed = false;
         if (!value.str_value.empty()) {
           const auto parsed = value.as<int32_t>();
           if (parsed.has_value()) {
-            CVarSystem::get()->set_int_cvar(cvar->name.c_str(), *parsed);
+            cvar_system->set_int_cvar(entt::hashed_string(cvar->name.c_str()), *parsed);
             current_value = *parsed;
             changed = true;
           }
@@ -215,12 +216,12 @@ void RuntimeConsole::process_command(const std::string& command) {
         break;
       }
       case CVarType::FLOAT: {
-        auto current_value = get_current_cvar_value<float>(cvar->arrayIndex);
+        auto current_value = cvar_system->float_cvars.at(cvar->array_index).current;
         bool changed = false;
         if (!value.str_value.empty()) {
           const auto parsed = value.as<float>();
           if (parsed.has_value()) {
-            CVarSystem::get()->set_float_cvar(cvar->name.c_str(), *parsed);
+            cvar_system->set_float_cvar(entt::hashed_string(cvar->name.c_str()), *parsed);
             current_value = *parsed;
             changed = true;
           }
@@ -229,10 +230,10 @@ void RuntimeConsole::process_command(const std::string& command) {
         break;
       }
       case CVarType::STRING: {
-        auto current_value = get_current_cvar_value<std::string>(cvar->arrayIndex);
+        auto current_value = cvar_system->string_cvars.at(cvar->array_index).current;
         bool changed = false;
         if (!value.str_value.empty()) {
-          CVarSystem::get()->set_string_cvar(cvar->name.c_str(), value.str_value.c_str());
+          cvar_system->set_string_cvar(entt::hashed_string(cvar->name.c_str()), value.str_value.c_str());
           current_value = value.str_value;
           changed = true;
         }
@@ -243,22 +244,20 @@ void RuntimeConsole::process_command(const std::string& command) {
   }
 
   // commands registered with register_command()
-  if (m_command_map.contains(parsed_command)) {
-    const auto& c = m_command_map[parsed_command];
+  if (command_map.contains(parsed_command)) {
+    const auto& c = command_map[parsed_command];
     if (c.action != nullptr) {
       c.action();
     }
     if (!value.str_value.empty()) {
       if (c.str_value != nullptr) {
         *c.str_value = value.str_value;
-      }
-      else if (c.int_value != nullptr) {
+      } else if (c.int_value != nullptr) {
         const auto v = value.as<int32_t>();
         if (v.has_value()) {
           *c.int_value = v.value();
         }
-      }
-      else if (c.bool_value != nullptr) {
+      } else if (c.bool_value != nullptr) {
         const auto v = value.as<int32_t>();
         if (v.has_value()) {
           *c.bool_value = v.value();
@@ -266,11 +265,10 @@ void RuntimeConsole::process_command(const std::string& command) {
       }
     }
     if (!c.on_succes_log.empty())
-      add_log(c.on_succes_log.c_str(), fmtlog::LogLevel::INF);
-  }
-  else {
+      add_log(c.on_succes_log.c_str(), loguru::Verbosity_INFO);
+  } else {
     if (!is_cvar_variable)
-      add_log("Non existent command.", fmtlog::LogLevel::ERR);
+      add_log("Non existent command.", loguru::Verbosity_ERROR);
   }
 }
 
@@ -282,51 +280,116 @@ RuntimeConsole::ParsedCommandValue RuntimeConsole::parse_value(const std::string
   return {value};
 }
 
-std::string RuntimeConsole::parse_command(const std::string& command) {
-  return command.substr(0, command.find(' '));
-}
+std::string RuntimeConsole::parse_command(const std::string& command) { return command.substr(0, command.find(' ')); }
 
 int RuntimeConsole::input_text_callback(ImGuiInputTextCallbackData* data) {
-  if (data->EventFlag == ImGuiInputTextFlags_CallbackHistory) {
-    const int prev_history_pos = m_history_position;
-    if (data->EventKey == ImGuiKey_UpArrow) {
-      if (m_history_position == -1)
-        m_history_position = (int32_t)m_input_log.size() - 1;
-      else if (m_history_position > 0)
-        m_history_position--;
-    }
-    else if (data->EventKey == ImGuiKey_DownArrow) {
-      if (m_history_position != -1)
-        if (++m_history_position >= (int32_t)m_input_log.size())
-          m_history_position = -1;
-    }
+  switch (data->EventFlag) {
+    case ImGuiInputTextFlags_CallbackCompletion: {
+      // Locate beginning of current word
+      const char* word_end = data->Buf + data->CursorPos;
+      const char* word_start = word_end;
+      while (word_start > data->Buf) {
+        const char c = word_start[-1];
+        if (c == ' ' || c == '\t' || c == ',' || c == ';')
+          break;
+        word_start--;
+      }
 
-    if (prev_history_pos != m_history_position) {
-      const char* history_str = m_history_position >= 0 ? m_input_log[m_history_position] : "";
-      data->DeleteChars(0, data->BufTextLen);
-      data->InsertChars(0, history_str);
+      const auto avaiable_commands = get_available_commands();
+
+      // Build a list of candidates
+      std::vector<const char*> candidates;
+      for (const auto& avaiable_command : avaiable_commands)
+        if (_strnicmp(avaiable_command.c_str(), word_start, (int)(word_end - word_start)) == 0)
+          candidates.push_back(avaiable_command.c_str());
+
+      if (candidates.empty()) {
+        add_log("No match", loguru::Verbosity_WARNING);
+      } else if (candidates.size() == 1) {
+        // Single match. Delete the beginning of the word and replace it entirely so we've got nice casing.
+        data->DeleteChars((int)(word_start - data->Buf), (int)(word_end - word_start));
+        data->InsertChars(data->CursorPos, candidates[0]);
+        data->InsertChars(data->CursorPos, " ");
+      } else {
+        // Multiple matches. Complete as much as we can..
+        // So inputing "C"+Tab will complete to "CL" then display "CLEAR" and "CLASSIFY" as matches.
+        int match_len = (int)(word_end - word_start);
+        for (;;) {
+          int c = 0;
+          bool all_candidates_matches = true;
+          for (int i = 0; i < (int)candidates.size() && all_candidates_matches; i++)
+            if (i == 0)
+              c = toupper(candidates[i][match_len]);
+            else if (c == 0 || c != toupper(candidates[i][match_len]))
+              all_candidates_matches = false;
+          if (!all_candidates_matches)
+            break;
+          match_len++;
+        }
+
+        if (match_len > 0) {
+          data->DeleteChars((int)(word_start - data->Buf), (int)(word_end - word_start));
+          data->InsertChars(data->CursorPos, candidates[0], candidates[0] + match_len);
+        }
+
+        // List matches
+        std::string possible_matches = "Possible matches:\n";
+        for (auto& candidate : candidates)
+          possible_matches.append(fmt::format("  {} \n", candidate));
+        add_log(possible_matches.c_str(), loguru::Verbosity_INFO);
+      }
+      break;
     }
+    case ImGuiInputTextFlags_CallbackHistory: {
+      const int prev_history_pos = history_position;
+      if (data->EventKey == ImGuiKey_UpArrow) {
+        if (history_position == -1)
+          history_position = (int32_t)input_log.size() - 1;
+        else if (history_position > 0)
+          history_position--;
+      } else if (data->EventKey == ImGuiKey_DownArrow) {
+        if (history_position != -1)
+          if (++history_position >= (int32_t)input_log.size())
+            history_position = -1;
+      }
+
+      if (prev_history_pos != history_position) {
+        const std::string& history_str = history_position >= 0 ? input_log[history_position] : "";
+        data->DeleteChars(0, data->BufTextLen);
+        data->InsertChars(0, history_str.c_str());
+      }
+      break;
+    }
+    default:;
   }
 
   return 0;
 }
 
 void RuntimeConsole::help_command() {
-  std::string available_commands = "Available commands: \n";
-  for (auto& [commandStr, command] : m_command_map) {
-    available_commands.append(fmt::format("\t{0} \n", commandStr));
-  }
+  const auto available_commands = get_available_commands();
+  std::string t = "Available commands: \n";
+  for (const auto& c : available_commands)
+    t.append(fmt::format("\t {} \n", c));
 
-  for (int i = 0; i < CVarSystem::get()->get_cvar_array<int32_t>()->lastCVar; i++) {
-    const auto p = CVarSystem::get()->get_cvar_array<int32_t>()->cvars[i].parameter;
-    available_commands.append(fmt::format("\t{0} \n", p->name.c_str()));
-  }
-
-  for (int i = 0; i < CVarSystem::get()->get_cvar_array<float>()->lastCVar; i++) {
-    const auto p = CVarSystem::get()->get_cvar_array<int32_t>()->cvars[i].parameter;
-    available_commands.append(fmt::format("\t{0} \n", p->name.c_str()));
-  }
-
-  add_log(available_commands.c_str(), fmtlog::LogLevel::DBG);
+  add_log(t.c_str(), loguru::Verbosity_INFO);
 }
+
+std::vector<std::string> RuntimeConsole::get_available_commands() {
+  std::vector<std::string> available_commands = {};
+  for (auto& [commandStr, command] : command_map) {
+    available_commands.emplace_back(commandStr);
+  }
+
+  const auto system = CVarSystem::get();
+  for (const auto& var : system->int_cvars) {
+    available_commands.emplace_back(var.parameter->name);
+  }
+
+  for (const auto& var : system->float_cvars) {
+    available_commands.emplace_back(var.parameter->name);
+  }
+
+  return available_commands;
 }
+} // namespace ox
